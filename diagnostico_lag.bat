@@ -21,6 +21,7 @@ $ErrorActionPreference = 'SilentlyContinue'
 # --- Destinos ---
 $dnsCloudflare = '1.1.1.1'
 $dnsGoogle     = '8.8.8.8'
+$puertoTcp     = 443   # HTTPS: siempre deberia estar abierto en ambos destinos
 
 # --- Umbrales del diagnostico (editables) ---
 $U_RouterPromedioProblema = 20    # ms: promedio al router = problema
@@ -31,6 +32,15 @@ $U_RouterP99Aviso         = 30    # ms: el 1% de los pings llega a esto = aviso
 $U_RouterMaxAviso         = 150   # ms: un solo pico asi de alto = aviso
 $U_SenalWifiBaja          = 50    # %: senal Wi-Fi por debajo de esto = aviso
 $U_SegundosRegistroPeriodico = 60 # segundos entre registros periodicos en el log
+$U_TcpPromedioProblema    = 150   # ms: promedio de conexion TCP real = problema
+$U_TcpJitterProblema      = 20    # ms: jitter de conexion TCP real = problema
+
+# --- Linea base personal: se toma de las primeras N muestras de la sesion ---
+$U_MuestrasBaseline        = 60   # ~1 minuto a 1 muestra/seg
+$U_BaselineFactorProm      = 3    # el promedio actual debe ser N veces la base...
+$U_BaselineMinDeltaProm    = 5    # ...y ademas superarla por al menos esto (ms)
+$U_BaselineFactorJitter    = 3
+$U_BaselineMinDeltaJitter  = 5
 
 # --- El log se guarda junto a este .bat ---
 $baseDir = $env:SCRIPT_DIR
@@ -48,7 +58,7 @@ function Formato-Duracion ($desde) {
     return ((Get-Date) - $desde).ToString('hh\:mm\:ss')
 }
 
-# --- Ping preciso a nivel .NET: devuelve ms o -1 si se perdio el paquete ---
+# --- Ping ICMP preciso a nivel .NET: devuelve ms o -1 si se perdio el paquete ---
 function Get-PingTime ($Address) {
     try {
         $ping = New-Object System.Net.NetworkInformation.Ping
@@ -59,6 +69,30 @@ function Get-PingTime ($Address) {
         return $tiempo
     } catch {
         return -1
+    }
+}
+
+# --- "Ping" TCP real: tiempo de conexion (SYN-ACK) a un puerto. Mas parecido
+#     al trafico real de una app/juego que el ICMP, que muchos equipos
+#     intermedios priorizan distinto (o ni responden). ---
+function Get-TcpConnectTime ($Address, $Port, $TimeoutMs) {
+    $cliente = $null
+    try {
+        $cliente = New-Object System.Net.Sockets.TcpClient
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $resultado = $cliente.BeginConnect($Address, $Port, $null, $null)
+        $exito = $resultado.AsyncWaitHandle.WaitOne($TimeoutMs)
+        $sw.Stop()
+        $tiempo = -1
+        if ($exito -and $cliente.Connected) {
+            $cliente.EndConnect($resultado)
+            $tiempo = [int]$sw.ElapsedMilliseconds
+        }
+        return $tiempo
+    } catch {
+        return -1
+    } finally {
+        if ($cliente -ne $null) { $cliente.Close() }
     }
 }
 
@@ -129,13 +163,9 @@ function Obtener-InfoConexion {
     if ($adaptador.PhysicalMediaType -match '802.11') {
         $info.Tipo = 'Wi-Fi'
 
-        # Metodo principal (sin admin, sin permiso de ubicacion): el nombre
-        # del perfil de red activo. Coincide con el SSID salvo que lo hayas
-        # renombrado manualmente en Windows.
         $perfil = Get-NetConnectionProfile -InterfaceIndex $ruta.InterfaceIndex -ErrorAction SilentlyContinue
         if ($perfil -and $perfil.Name) { $info.SSID = $perfil.Name }
 
-        # Senal (y SSID de respaldo si el metodo principal fallo): netsh.
         $salidaWifi = @(& netsh.exe wlan show interfaces 2>$null)
         $info.Cruda = $salidaWifi
         $textoCompleto = ($salidaWifi -join ' ')
@@ -264,8 +294,9 @@ function Hay-Picos ($x) {
 
 # ======================================================================
 #  Diagnostico: OK / ATENCION / PROBLEMA (local, ISP o internet general)
+#  Lee $baseline directamente (linea base capturada en el bucle principal).
 # ======================================================================
-function Evaluar-Diagnostico ($r, $i, $c, $g, $conexion) {
+function Evaluar-Diagnostico ($r, $i, $c, $g, $cTcp, $gTcp, $conexion) {
     $probLocal = @()
     $probIsp = @()
     $avisos = @()
@@ -286,18 +317,31 @@ function Evaluar-Diagnostico ($r, $i, $c, $g, $conexion) {
         $avisos += "Senal Wi-Fi baja ($($conexion.Senal)%): puede ser la causa de picos intermitentes"
     }
 
-    # --- Internet (Cloudflare y Google) ---
-    $objetivos = @{ 'Cloudflare' = $c; 'Google' = $g }
+    # --- Internet: ICMP (ping) + TCP real (puerto 443) por separado ---
+    # El juego usa UDP, no ICMP, y muchos routers intermedios priorizan el
+    # ICMP distinto al trafico real. Por eso se compara: si solo falla el
+    # ICMP, puede ser ruido; si tambien falla el TCP real, pesa mas.
+    $objetivosIcmp = @{ 'Cloudflare' = $c; 'Google' = $g }
+    $objetivosTcp  = @{ 'Cloudflare' = $cTcp; 'Google' = $gTcp }
     foreach ($nom in @('Cloudflare', 'Google')) {
-        $x = $objetivos[$nom]
-        if ($x.Perdida -gt 3) { $probIsp += "${nom}: perdida de paquetes: $(Formato-Conteo $x.PerdidosN $x.Total)" }
-        if ($x.Promedio -gt 100) { $probIsp += "${nom}: latencia promedio alta ($($x.Promedio) ms sobre $($x.Total) muestras)" }
-        if ($x.Jitter -gt 15) { $probIsp += "${nom}: jitter alto ($($x.Jitter) ms sobre $($x.Total) muestras)" }
-        if (Hay-Picos $x) { $probIsp += "${nom}: picos frecuentes ($(Formato-Conteo $x.Spikes120 $x.Total) de 120 ms o mas, $(Formato-Conteo $x.Spikes80 $x.Total) de 80-119 ms)" }
+        $x = $objetivosIcmp[$nom]
+        $xt = $objetivosTcp[$nom]
 
-        if ($x.Maximo -ge 200) { $avisos += "${nom}: pico maximo de $($x.Maximo) ms (sobre $($x.Total) muestras totales)" }
-        if (($x.Jitter -gt 10) -and ($x.Jitter -le 15)) { $avisos += "${nom}: jitter de $($x.Jitter) ms" }
-        if (($x.Perdida -gt 1) -and ($x.Perdida -le 3)) { $avisos += "${nom}: perdida de paquetes: $(Formato-Conteo $x.PerdidosN $x.Total)" }
+        $probIcmp = ($x.Perdida -gt 3) -or ($x.Promedio -gt 100) -or ($x.Jitter -gt 15) -or (Hay-Picos $x)
+        $probTcp  = ($xt.Perdida -gt 3) -or ($xt.Promedio -gt $U_TcpPromedioProblema) -or ($xt.Jitter -gt $U_TcpJitterProblema) -or (Hay-Picos $xt)
+
+        if ($probIcmp -and $probTcp) {
+            $probIsp += "${nom}: problema confirmado por ICMP y por TCP real al puerto $puertoTcp (TCP: jitter $($xt.Jitter) ms, $(Formato-Conteo $xt.Spikes120 $xt.Total) picos >=120ms, perdida $($xt.Perdida)%)"
+        }
+        elseif ($probTcp -and (-not $probIcmp)) {
+            $probIsp += "${nom}: la conexion TCP real (puerto $puertoTcp) tiene problemas aunque el ping ICMP esta limpio -- esto es mas representativo del trafico real que un juego generaria (TCP: jitter $($xt.Jitter) ms, $(Formato-Conteo $xt.Spikes120 $xt.Total) picos >=120ms)"
+        }
+        elseif ($probIcmp -and (-not $probTcp)) {
+            $avisos += "${nom}: el ping ICMP muestra anomalias pero la conexion TCP real (puerto $puertoTcp) esta limpia -- podria ser solo el ICMP despriorizado, no necesariamente afecta al juego"
+        }
+
+        if ($x.Maximo -ge 200) { $avisos += "${nom} (ICMP): pico maximo de $($x.Maximo) ms (sobre $($x.Total) muestras totales)" }
+        if ($xt.Maximo -ge 250) { $avisos += "${nom} (TCP): conexion tardo hasta $($xt.Maximo) ms (sobre $($xt.Total) intentos totales)" }
     }
 
     # --- Salto ISP: solo corrobora si Internet YA muestra problemas ---
@@ -310,6 +354,28 @@ function Evaluar-Diagnostico ($r, $i, $c, $g, $conexion) {
     # --- Pista: picos solo en el router, limpios rio abajo, sugiere Wi-Fi/router y no el ISP ---
     if ((Hay-Picos $r) -and (-not (Hay-Picos $c)) -and (-not (Hay-Picos $g)) -and (($i -eq $null) -or (-not (Hay-Picos $i)))) {
         $avisos += "Los picos del router NO se repiten en el salto del ISP ni en Cloudflare/Google, aunque ese trafico tambien pasa por el router: esto apunta a Wi-Fi o al propio router, no a tu proveedor"
+    }
+
+    # --- Linea base personal (primeras $U_MuestrasBaseline muestras de la sesion) ---
+    if ($baseline -ne $null) {
+        $bR = $baseline.Router
+        if (($bR.Promedio -gt 0) -and ($r.Promedio -ge ($bR.Promedio * $U_BaselineFactorProm)) -and (($r.Promedio - $bR.Promedio) -ge $U_BaselineMinDeltaProm)) {
+            $avisos += "Router/modem: promedio actual ($($r.Promedio) ms) muy por encima de tu propia referencia inicial ($($bR.Promedio) ms, primeras $U_MuestrasBaseline muestras)"
+        }
+        $umbralJR = [math]::Max($bR.Jitter * $U_BaselineFactorJitter, $bR.Jitter + $U_BaselineMinDeltaJitter)
+        if (($r.Jitter -ge $umbralJR) -and ($r.Jitter -gt 3)) {
+            $avisos += "Router/modem: jitter actual ($($r.Jitter) ms) muy por encima de tu referencia inicial ($($bR.Jitter) ms)"
+        }
+
+        $bC = $baseline.Cloud
+        if (($bC.Promedio -gt 0) -and ($c.Promedio -ge ($bC.Promedio * $U_BaselineFactorProm)) -and (($c.Promedio - $bC.Promedio) -ge $U_BaselineMinDeltaProm)) {
+            $avisos += "Cloudflare: promedio actual ($($c.Promedio) ms) muy por encima de tu referencia inicial ($($bC.Promedio) ms)"
+        }
+
+        $bG = $baseline.Google
+        if (($bG.Promedio -gt 0) -and ($g.Promedio -ge ($bG.Promedio * $U_BaselineFactorProm)) -and (($g.Promedio - $bG.Promedio) -ge $U_BaselineMinDeltaProm)) {
+            $avisos += "Google: promedio actual ($($g.Promedio) ms) muy por encima de tu referencia inicial ($($bG.Promedio) ms)"
+        }
     }
 
     $res = @{}
@@ -352,6 +418,17 @@ $statI = $null
 if ($ispIP -ne $null) { $statI = Nuevo-Stat }
 $statC = Nuevo-Stat
 $statG = Nuevo-Stat
+$statCTcp = Nuevo-Stat
+$statGTcp = Nuevo-Stat
+
+$baseline = $null
+function Capturar-Baseline {
+    return @{
+        Router = Resumen-Stats $statR
+        Cloud  = Resumen-Stats $statC
+        Google = Resumen-Stats $statG
+    }
+}
 
 $eventos = New-Object System.Collections.ArrayList
 $colaTxt = New-Object System.Collections.ArrayList
@@ -380,7 +457,9 @@ function Construir-Reporte ($modo) {
     if ($statI -ne $null) { $i = Resumen-Stats $statI }
     $c = Resumen-Stats $statC
     $g = Resumen-Stats $statG
-    $dx = Evaluar-Diagnostico $r $i $c $g $conexion
+    $cTcp = Resumen-Stats $statCTcp
+    $gTcp = Resumen-Stats $statGTcp
+    $dx = Evaluar-Diagnostico $r $i $c $g $cTcp $gTcp $conexion
     $duracion = Formato-Duracion $inicioSesion
 
     $titulo = 'SNAPSHOT PARCIAL DE CONEXION'
@@ -396,6 +475,11 @@ function Construir-Reporte ($modo) {
     $lineaConexion = "Conexion: $($conexion.Tipo)"
     if ($conexion.Detalle -ne '') { $lineaConexion += " ($($conexion.Detalle)" + $(if ($conexion.Senal -ne $null) { ", Senal: $($conexion.Senal)%)" } else { ")" }) }
 
+    $lineaBaseline = "Linea base: aun no capturada (faltan $([math]::Max(0, $U_MuestrasBaseline - $r.Total)) muestras)"
+    if ($baseline -ne $null) {
+        $lineaBaseline = "Linea base (primeras $U_MuestrasBaseline muestras): Router $($baseline.Router.Promedio) ms / jitter $($baseline.Router.Jitter) ms | Cloudflare $($baseline.Cloud.Promedio) ms | Google $($baseline.Google.Promedio) ms"
+    }
+
     $reporte = @"
 
 =======================================================================
@@ -403,6 +487,7 @@ function Construir-Reporte ($modo) {
 =======================================================================
 Duracion de la sesion: $duracion
 $lineaConexion
+$lineaBaseline
 [Router/Modem ($routerIP)] - $($r.Total) muestras totales
 - Promedio: $($r.Promedio) ms | Mediana: $($r.Mediana) ms | P95: $($r.P95) ms | P99: $($r.P99) ms | Maximo: $($r.Maximo) ms
 - Jitter: $($r.Jitter) ms | Picos 80-119ms: $($r.Spikes80) | Picos >=120ms: $($r.Spikes120) | Perdida: $($r.Perdida)% ($($r.PerdidosN) de $($r.Total))
@@ -421,13 +506,21 @@ $lineaConexion
     }
 
     $reporte += @"
-[Cloudflare DNS ($dnsCloudflare)] - $($c.Total) muestras totales
+[Cloudflare ICMP ($dnsCloudflare)] - $($c.Total) muestras totales
 - Promedio: $($c.Promedio) ms | Mediana: $($c.Mediana) ms | P95: $($c.P95) ms | P99: $($c.P99) ms | Maximo: $($c.Maximo) ms
 - Jitter: $($c.Jitter) ms | Picos 80-119ms: $($c.Spikes80) | Picos >=120ms: $($c.Spikes120) | Perdida: $($c.Perdida)% ($($c.PerdidosN) de $($c.Total))
 
-[Google DNS ($dnsGoogle)] - $($g.Total) muestras totales
+[Cloudflare TCP:$puertoTcp (conexion real)] - $($cTcp.Total) intentos totales
+- Promedio: $($cTcp.Promedio) ms | Mediana: $($cTcp.Mediana) ms | P95: $($cTcp.P95) ms | P99: $($cTcp.P99) ms | Maximo: $($cTcp.Maximo) ms
+- Jitter: $($cTcp.Jitter) ms | Picos 80-119ms: $($cTcp.Spikes80) | Picos >=120ms: $($cTcp.Spikes120) | Fallidas: $($cTcp.Perdida)% ($($cTcp.PerdidosN) de $($cTcp.Total))
+
+[Google ICMP ($dnsGoogle)] - $($g.Total) muestras totales
 - Promedio: $($g.Promedio) ms | Mediana: $($g.Mediana) ms | P95: $($g.P95) ms | P99: $($g.P99) ms | Maximo: $($g.Maximo) ms
 - Jitter: $($g.Jitter) ms | Picos 80-119ms: $($g.Spikes80) | Picos >=120ms: $($g.Spikes120) | Perdida: $($g.Perdida)% ($($g.PerdidosN) de $($g.Total))
+
+[Google TCP:$puertoTcp (conexion real)] - $($gTcp.Total) intentos totales
+- Promedio: $($gTcp.Promedio) ms | Mediana: $($gTcp.Mediana) ms | P95: $($gTcp.P95) ms | P99: $($gTcp.P99) ms | Maximo: $($gTcp.Maximo) ms
+- Jitter: $($gTcp.Jitter) ms | Picos 80-119ms: $($gTcp.Spikes80) | Picos >=120ms: $($gTcp.Spikes120) | Fallidas: $($gTcp.Perdida)% ($($gTcp.PerdidosN) de $($gTcp.Total))
 =======================================================================
 "@
 
@@ -439,10 +532,11 @@ $lineaConexion
     foreach ($m in $dx.Motivos) { $reporte += "   - $m`r`n" }
     if ($dx.Recomendacion -ne '') { $reporte += "   RECOMENDACION: $($dx.Recomendacion)`r`n" }
     if ($r.Total -lt 30) { $reporte += "   (Hay pocas muestras: deja correr mas tiempo antes de confiar en este resultado.)`r`n" }
-    if ($i -ne $null) { $reporte += "   NOTA: el 'primer salto ISP' es un equipo intermedio; muchos routers responden al ping con menor prioridad que al trafico que solo atraviesan, asi que sus numeros pueden estar inflados. Se usa solo como pista adicional.`r`n" }
+    if ($i -ne $null) { $reporte += "   NOTA ISP: el 'primer salto ISP' es un equipo intermedio; muchos routers responden al ping con menor prioridad que al trafico que solo atraviesan, asi que sus numeros pueden estar inflados. Se usa solo como pista adicional.`r`n" }
+    $reporte += "   NOTA TCP: las lineas 'TCP:$puertoTcp' miden el tiempo real de conexion (protocolo TCP), no ICMP. Se parecen mas al trafico real de una app o juego que el ping clasico, que algunos equipos intermedios tratan distinto.`r`n"
 
     if ($eventos.Count -gt 0) {
-        $reporte += "`r`nULTIMOS EVENTOS (picos de 120 ms o mas / paquetes perdidos):`r`n"
+        $reporte += "`r`nULTIMOS EVENTOS (picos de 120 ms o mas / paquetes perdidos, ICMP):`r`n"
         foreach ($e in $eventos) { $reporte += "  $e`r`n" }
     }
 
@@ -467,9 +561,11 @@ function Dibujar-Panel {
     if ($statI -ne $null) { $i = Resumen-Stats $statI }
     $c = Resumen-Stats $statC
     $g = Resumen-Stats $statG
-    $dx = Evaluar-Diagnostico $r $i $c $g $conexion
+    $cTcp = Resumen-Stats $statCTcp
+    $gTcp = Resumen-Stats $statGTcp
+    $dx = Evaluar-Diagnostico $r $i $c $g $cTcp $gTcp $conexion
 
-    $largoSep = [math]::Min(75, $w - 1)
+    $largoSep = [math]::Min(78, $w - 1)
     $sep = '=' * $largoSep
     $transcurrido = Formato-Duracion $inicioSesion
 
@@ -482,15 +578,17 @@ function Dibujar-Panel {
     [void]$lineas.Add(@{ T = $sep; C = 'Cyan' })
     [void]$lineas.Add(@{ T = " Router/Modem: $routerIP | ISP: $(if ($ispIP -ne $null) { $ispIP } else { 'no detectado' }) | Cloudflare: $dnsCloudflare | Google: $dnsGoogle"; C = 'Gray' })
     [void]$lineas.Add(@{ T = $lineaConexion; C = 'Gray' })
-    [void]$lineas.Add(@{ T = " Duracion: $transcurrido | Registro periodico cada $($U_SegundosRegistroPeriodico)s | Log: $logFile"; C = 'Gray' })
+    [void]$lineas.Add(@{ T = " Duracion: $transcurrido | Registro cada $($U_SegundosRegistroPeriodico)s | Baseline: $(if ($baseline -ne $null) { 'lista' } else { "en $([math]::Max(0, $U_MuestrasBaseline - $r.Total))" })"; C = 'Gray' })
     [void]$lineas.Add(@{ T = " [S] Reporte y pausa  [C] Continuar  [Q] o Ctrl+C: Finalizar y ver diagnostico"; C = 'Cyan' })
     [void]$lineas.Add(@{ T = $sep; C = 'Cyan' })
 
-    $fmt = '{0,-14}{1,7}{2,6}{3,5}{4,5}{5,5}{6,6}{7,6}{8,7}{9,6}{10,7}'
+    $fmt = '{0,-16}{1,7}{2,6}{3,5}{4,5}{5,5}{6,6}{7,6}{8,7}{9,6}{10,7}'
     $enc = $fmt -f 'OBJETIVO', 'MUEST', 'PROM', 'MED', 'P95', 'P99', 'MAX', 'JIT', '80-119', '>=120', 'PERD'
     $filaR = $fmt -f 'Router/Modem', $r.Total, $r.Promedio, $r.Mediana, $r.P95, $r.P99, $r.Maximo, $r.Jitter, $r.Spikes80, $r.Spikes120, "$($r.Perdida)%"
-    $filaC = $fmt -f 'Cloudflare', $c.Total, $c.Promedio, $c.Mediana, $c.P95, $c.P99, $c.Maximo, $c.Jitter, $c.Spikes80, $c.Spikes120, "$($c.Perdida)%"
-    $filaG = $fmt -f 'Google', $g.Total, $g.Promedio, $g.Mediana, $g.P95, $g.P99, $g.Maximo, $g.Jitter, $g.Spikes80, $g.Spikes120, "$($g.Perdida)%"
+    $filaC = $fmt -f 'Cloudflare-ICMP', $c.Total, $c.Promedio, $c.Mediana, $c.P95, $c.P99, $c.Maximo, $c.Jitter, $c.Spikes80, $c.Spikes120, "$($c.Perdida)%"
+    $filaCTcp = $fmt -f 'Cloudflare-TCP', $cTcp.Total, $cTcp.Promedio, $cTcp.Mediana, $cTcp.P95, $cTcp.P99, $cTcp.Maximo, $cTcp.Jitter, $cTcp.Spikes80, $cTcp.Spikes120, "$($cTcp.Perdida)%"
+    $filaG = $fmt -f 'Google-ICMP', $g.Total, $g.Promedio, $g.Mediana, $g.P95, $g.P99, $g.Maximo, $g.Jitter, $g.Spikes80, $g.Spikes120, "$($g.Perdida)%"
+    $filaGTcp = $fmt -f 'Google-TCP', $gTcp.Total, $gTcp.Promedio, $gTcp.Mediana, $gTcp.P95, $gTcp.P99, $gTcp.Maximo, $gTcp.Jitter, $gTcp.Spikes80, $gTcp.Spikes120, "$($gTcp.Perdida)%"
     [void]$lineas.Add(@{ T = $enc; C = 'Cyan' })
     [void]$lineas.Add(@{ T = $filaR; C = 'White' })
     if ($i -ne $null) {
@@ -498,7 +596,9 @@ function Dibujar-Panel {
         [void]$lineas.Add(@{ T = $filaI; C = 'DarkGray' })
     }
     [void]$lineas.Add(@{ T = $filaC; C = 'White' })
+    [void]$lineas.Add(@{ T = $filaCTcp; C = 'DarkGray' })
     [void]$lineas.Add(@{ T = $filaG; C = 'White' })
+    [void]$lineas.Add(@{ T = $filaGTcp; C = 'DarkGray' })
 
     $colorEstado = 'Green'
     if ($dx.Nivel -eq 'ATENCION') { $colorEstado = 'Yellow' }
@@ -511,7 +611,7 @@ function Dibujar-Panel {
     }
 
     [void]$lineas.Add(@{ T = $sep; C = 'Cyan' })
-    [void]$lineas.Add(@{ T = ' ULTIMAS MEDICIONES (el historial completo esta en el log)'; C = 'Cyan' })
+    [void]$lineas.Add(@{ T = ' ULTIMAS MEDICIONES ICMP (el historial completo esta en el log)'; C = 'Cyan' })
 
     $libres = $h - 1 - $lineas.Count
     if ($libres -lt 1) { $libres = 1 }
@@ -593,16 +693,24 @@ while (-not $salir) {
     if ($ispIP -ne $null) { $tIsp = Get-PingTime $ispIP }
     $tCloud  = Get-PingTime $dnsCloudflare
     $tGoogle = Get-PingTime $dnsGoogle
+    $tCloudTcp = Get-TcpConnectTime $dnsCloudflare $puertoTcp 1000
+    $tGoogleTcp = Get-TcpConnectTime $dnsGoogle $puertoTcp 1000
 
     Agregar-Muestra $statR $tRouter
     if ($statI -ne $null) { Agregar-Muestra $statI $tIsp }
     Agregar-Muestra $statC $tCloud
     Agregar-Muestra $statG $tGoogle
+    Agregar-Muestra $statCTcp $tCloudTcp
+    Agregar-Muestra $statGTcp $tGoogleTcp
 
     Registrar-Evento 'Router/Modem' $tRouter
     if ($ispIP -ne $null) { Registrar-Evento 'ISP (1er salto)' $tIsp }
     Registrar-Evento 'Cloudflare' $tCloud
     Registrar-Evento 'Google' $tGoogle
+
+    if (($baseline -eq $null) -and ($statR.Total -ge $U_MuestrasBaseline)) {
+        $baseline = Capturar-Baseline
+    }
 
     $sRouter = 'Perdido'
     if ($tRouter -ge 0) { $sRouter = "$tRouter ms" }
