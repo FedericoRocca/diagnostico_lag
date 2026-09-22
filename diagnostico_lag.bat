@@ -10,6 +10,7 @@ exit /b
 # ======================================================================
 #  DIAGNOSTICO DE LAG EN VIVO - Red local / ISP / Internet
 #  Panel fijo arriba (se actualiza cada segundo) + ultimas mediciones abajo.
+#  Cada 1 minuto se guarda un registro periodico completo en el log.
 #  Teclas: S = reporte completo y pausa, C = continuar, Q = finalizar
 #  Tip: maximiza la ventana para ver mas mediciones debajo del panel.
 # ======================================================================
@@ -28,13 +29,14 @@ $U_RouterP95Aviso         = 10    # ms: el 5% de los pings llega a esto = aviso
 $U_RouterP99Aviso         = 30    # ms: el 1% de los pings llega a esto = aviso
 $U_RouterMaxAviso         = 150   # ms: un solo pico asi de alto = aviso
 $U_SenalWifiBaja          = 50    # %: senal Wi-Fi por debajo de esto = aviso
+$U_SegundosRegistroPeriodico = 60 # segundos entre registros periodicos en el log
 
 # --- El log se guarda junto a este .bat ---
 $baseDir = $env:SCRIPT_DIR
 if ([string]::IsNullOrEmpty($baseDir)) { $baseDir = (Get-Location).Path }
 $logFile = Join-Path -Path $baseDir -ChildPath 'registro_latencia.txt'
 
-# --- Formatea "N de TOTAL (X%)" para cualquier conteo que se muestre ---
+# --- Formatea "N de TOTAL muestras (X%)" para cualquier conteo que se muestre ---
 function Formato-Conteo ($cantidad, $total) {
     $pct = 0
     if ($total -gt 0) { $pct = [math]::Round(($cantidad / $total) * 100, 1) }
@@ -144,9 +146,9 @@ function Obtener-InfoConexion {
         if ($info.SSID -ne '') {
             $info.Detalle = "SSID: $($info.SSID)"
         } elseif ($pares.Count -gt 0) {
-            $info.Detalle = 'conectado, pero no se pudo leer el SSID (ver detalle en el log)'
+            $info.Detalle = 'conectado, pero no se pudo leer el SSID (ver detalle DEBUG al inicio del log)'
         } else {
-            $info.Detalle = 'no se pudo leer "netsh wlan show interfaces" (ver detalle en el log)'
+            $info.Detalle = 'no se pudo leer "netsh wlan show interfaces" (ver detalle DEBUG al inicio del log)'
         }
     } else {
         $info.Tipo = 'Cable (Ethernet)'
@@ -272,8 +274,6 @@ function Evaluar-Diagnostico ($r, $i, $c, $g, $conexion) {
     }
 
     # --- Salto ISP: solo corrobora si Internet YA muestra problemas ---
-    # (un router intermedio puede responder mal al ping y estar sano igual,
-    #  asi que solo no alcanza para marcar PROBLEMA)
     if (($i -ne $null) -and ($probIsp.Count -gt 0)) {
         if ((Hay-Picos $i) -or ($i.Perdida -gt 3) -or ($i.Jitter -gt 15)) {
             $probIsp += "Confirmado tambien en el primer salto de tu ISP: jitter $($i.Jitter) ms, perdida $(Formato-Conteo $i.PerdidosN $i.Total), $(Formato-Conteo $i.Spikes120 $i.Total) picos de 120 ms o mas"
@@ -330,6 +330,7 @@ $eventos = New-Object System.Collections.ArrayList
 $colaTxt = New-Object System.Collections.ArrayList
 $colaCol = New-Object System.Collections.ArrayList
 $inicioSesion = Get-Date
+$ultimoRegistroPeriodico = Get-Date
 $anchoPrevio = 0
 $altoPrevio = 0
 
@@ -341,9 +342,10 @@ function Registrar-Evento ($nombre, $t) {
 }
 
 # ======================================================================
-#  Reporte completo (snapshot con S, o resumen final con Q)
+#  Reporte completo. $modo: 'parcial' (tecla S), 'final' (tecla Q)
+#  o 'periodico' (se guarda solo en el log cada 1 minuto, automatico)
 # ======================================================================
-function Construir-Reporte ($esFinal) {
+function Construir-Reporte ($modo) {
     if ($statR.Total -eq 0) { return 'Todavia no hay mediciones para mostrar.' }
 
     $r = Resumen-Stats $statR
@@ -356,9 +358,12 @@ function Construir-Reporte ($esFinal) {
 
     $titulo = 'SNAPSHOT PARCIAL DE CONEXION'
     $tituloDiag = 'DIAGNOSTICO PARCIAL (con lo medido hasta ahora)'
-    if ($esFinal) {
+    if ($modo -eq 'final') {
         $titulo = 'RESUMEN ESTADISTICO DEFINITIVO'
         $tituloDiag = 'DIAGNOSTICO DEL SISTEMA'
+    } elseif ($modo -eq 'periodico') {
+        $titulo = 'REGISTRO PERIODICO AUTOMATICO (cada 1 minuto)'
+        $tituloDiag = 'DIAGNOSTICO AL MOMENTO DE ESTE REGISTRO'
     }
 
     $lineaConexion = "Conexion: $($conexion.Tipo)"
@@ -414,11 +419,6 @@ $lineaConexion
         foreach ($e in $eventos) { $reporte += "  $e`r`n" }
     }
 
-    if (($conexion.Tipo -eq 'Wi-Fi') -and ($conexion.SSID -eq '') -and ($conexion.Cruda.Count -gt 0)) {
-        $reporte += "`r`nDEBUG - salida cruda de 'netsh wlan show interfaces' (para ajustar la deteccion del SSID):`r`n"
-        foreach ($linea in $conexion.Cruda) { $reporte += "  $linea`r`n" }
-    }
-
     $reporte += "=======================================================================`r`n"
     return $reporte
 }
@@ -455,7 +455,7 @@ function Dibujar-Panel {
     [void]$lineas.Add(@{ T = $sep; C = 'Cyan' })
     [void]$lineas.Add(@{ T = " Router/Modem: $routerIP | ISP: $(if ($ispIP -ne $null) { $ispIP } else { 'no detectado' }) | Cloudflare: $dnsCloudflare | Google: $dnsGoogle"; C = 'Gray' })
     [void]$lineas.Add(@{ T = $lineaConexion; C = 'Gray' })
-    [void]$lineas.Add(@{ T = " Duracion: $transcurrido | Log: $logFile"; C = 'Gray' })
+    [void]$lineas.Add(@{ T = " Duracion: $transcurrido | Registro periodico cada $($U_SegundosRegistroPeriodico)s | Log: $logFile"; C = 'Gray' })
     [void]$lineas.Add(@{ T = " [S] Reporte completo y pausa  [C] Continuar  [Q] Finalizar y ver diagnostico"; C = 'Cyan' })
     [void]$lineas.Add(@{ T = $sep; C = 'Cyan' })
 
@@ -514,7 +514,7 @@ function Dibujar-Panel {
 # ======================================================================
 function Modo-Snapshot {
     Clear-Host
-    $txt = Construir-Reporte $false
+    $txt = Construir-Reporte 'parcial'
     Write-Host $txt -ForegroundColor Yellow
     Add-Content -Path $logFile -Value $txt
     Write-Host ">>> MONITOREO EN PAUSA. Presiona 'C' para continuar o 'Q' para finalizar <<<" -ForegroundColor Cyan
@@ -537,6 +537,19 @@ function Modo-Snapshot {
 # ======================================================================
 Add-Content -Path $logFile -Value ("`r`n--- NUEVA SESION DE DIAGNOSTICO: " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + ' ---')
 Add-Content -Path $logFile -Value ("Conexion: $($conexion.Tipo) | ISP detectado: $(if ($ispIP -ne $null) { $ispIP } else { 'no' })")
+
+# Si es Wi-Fi y no se pudo leer el SSID, volcar la salida cruda de netsh
+# al log DESDE EL ARRANQUE (no hace falta esperar a un snapshot).
+if (($conexion.Tipo -eq 'Wi-Fi') -and ($conexion.SSID -eq '')) {
+    Add-Content -Path $logFile -Value "DEBUG - salida cruda de 'netsh wlan show interfaces' (para ajustar la deteccion del SSID):"
+    if ($conexion.Cruda.Count -eq 0) {
+        Add-Content -Path $logFile -Value '  (el comando no devolvio ninguna linea)'
+    } else {
+        foreach ($linea in $conexion.Cruda) { Add-Content -Path $logFile -Value "  [$($linea.Length) chars] $linea" }
+    }
+    Add-Content -Path $logFile -Value ''
+}
+
 [Console]::CursorVisible = $false
 Clear-Host
 
@@ -589,6 +602,13 @@ while (-not $salir) {
     }
     Add-Content -Path $logFile -Value $lineaLog
 
+    # --- Registro periodico automatico en el log (no interrumpe el panel) ---
+    if (((Get-Date) - $ultimoRegistroPeriodico).TotalSeconds -ge $U_SegundosRegistroPeriodico) {
+        $txtPeriodico = Construir-Reporte 'periodico'
+        Add-Content -Path $logFile -Value $txtPeriodico
+        $ultimoRegistroPeriodico = Get-Date
+    }
+
     Dibujar-Panel
 
     # Espera de 1 segundo revisando teclas cada 100 ms
@@ -611,7 +631,7 @@ while (-not $salir) {
 # --- Resumen final ---
 [Console]::CursorVisible = $true
 Clear-Host
-$final = Construir-Reporte $true
+$final = Construir-Reporte 'final'
 Write-Host $final -ForegroundColor Yellow
 Add-Content -Path $logFile -Value $final
 Write-Host "Registro guardado en: $logFile" -ForegroundColor Cyan
