@@ -12,6 +12,7 @@ exit /b
 #  Panel fijo arriba (se actualiza cada segundo) + ultimas mediciones abajo.
 #  Cada 1 minuto se guarda un registro periodico completo en el log.
 #  Teclas: S = reporte completo y pausa, C = continuar, Q = finalizar
+#  Ctrl+C tambien finaliza de forma prolija (guarda el resumen final).
 #  Tip: maximiza la ventana para ver mas mediciones debajo del panel.
 # ======================================================================
 
@@ -111,11 +112,14 @@ $ispIP = Detectar-SaltoISP $routerIP $dnsCloudflare
 if ($ispIP -eq $dnsCloudflare) { $ispIP = $null }
 
 # ======================================================================
-#  Tipo de conexion (Wi-Fi/cable) y senal. Parser generico clave:valor
-#  para no depender del idioma exacto de "netsh wlan show interfaces".
+#  Tipo de conexion (Wi-Fi/cable), SSID y senal.
+#  El SSID se obtiene primero via Get-NetConnectionProfile, que NO
+#  requiere permiso de ubicacion ni ser administrador. La senal (%) si
+#  depende de netsh, que en Windows 10/11 exige el permiso de Ubicacion
+#  y, en algunos equipos, tambien ejecutar como administrador.
 # ======================================================================
 function Obtener-InfoConexion {
-    $info = @{ Tipo = 'No detectado'; Detalle = ''; Senal = $null; SSID = ''; Cruda = @() }
+    $info = @{ Tipo = 'No detectado'; Detalle = ''; Senal = $null; SSID = ''; Cruda = @(); PermisoFaltante = $false }
     $ruta = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Sort-Object -Property RouteMetric | Select-Object -First 1
     if (-not $ruta) { return $info }
 
@@ -124,28 +128,51 @@ function Obtener-InfoConexion {
 
     if ($adaptador.PhysicalMediaType -match '802.11') {
         $info.Tipo = 'Wi-Fi'
+
+        # Metodo principal (sin admin, sin permiso de ubicacion): el nombre
+        # del perfil de red activo. Coincide con el SSID salvo que lo hayas
+        # renombrado manualmente en Windows.
+        $perfil = Get-NetConnectionProfile -InterfaceIndex $ruta.InterfaceIndex -ErrorAction SilentlyContinue
+        if ($perfil -and $perfil.Name) { $info.SSID = $perfil.Name }
+
+        # Senal (y SSID de respaldo si el metodo principal fallo): netsh.
         $salidaWifi = @(& netsh.exe wlan show interfaces 2>$null)
         $info.Cruda = $salidaWifi
-        $pares = @{}
-        foreach ($linea in $salidaWifi) {
-            if ($linea -match '^\s*([^:]+?)\s*:\s*(.+?)\s*$') {
-                $clave = $Matches[1]
-                $valor = $Matches[2]
-                if (-not $pares.ContainsKey($clave)) { $pares[$clave] = $valor }
+        $textoCompleto = ($salidaWifi -join ' ')
+        if ($textoCompleto -match '(?i)elevaci|administrador|permiso de ubicaci') {
+            $info.PermisoFaltante = $true
+        } else {
+            $pares = @{}
+            foreach ($linea in $salidaWifi) {
+                if ($linea -match '^\s*([^:]+?)\s*:\s*(.+?)\s*$') {
+                    $clave = $Matches[1]
+                    $valor = $Matches[2]
+                    if (-not $pares.ContainsKey($clave)) { $pares[$clave] = $valor }
+                }
+            }
+            foreach ($clave in $pares.Keys) {
+                $claveNorm = $clave.ToLowerInvariant()
+                if (($claveNorm -match 'ssid') -and ($claveNorm -notmatch 'bssid') -and ($info.SSID -eq '')) {
+                    $info.SSID = $pares[$clave]
+                }
+                if (($claveNorm -match 'se.al' -or $claveNorm -match 'signal') -and ($pares[$clave] -match '(\d{1,3})\s*%')) {
+                    $info.Senal = [int]$Matches[1]
+                }
             }
         }
-        foreach ($clave in $pares.Keys) {
-            $claveNorm = $clave.ToLowerInvariant()
-            if (($claveNorm -match 'ssid') -and ($claveNorm -notmatch 'bssid') -and ($info.SSID -eq '')) {
-                $info.SSID = $pares[$clave]
-            }
-            if (($claveNorm -match 'se.al' -or $claveNorm -match 'signal') -and ($pares[$clave] -match '(\d{1,3})\s*%')) {
-                $info.Senal = [int]$Matches[1]
-            }
-        }
+
         if ($info.SSID -ne '') {
             $info.Detalle = "SSID: $($info.SSID)"
-        } elseif ($pares.Count -gt 0) {
+            if ($info.Senal -eq $null) {
+                if ($info.PermisoFaltante) {
+                    $info.Detalle += ' (senal no disponible: netsh pide permiso de ubicacion/admin)'
+                } else {
+                    $info.Detalle += ' (senal no disponible)'
+                }
+            }
+        } elseif ($info.PermisoFaltante) {
+            $info.Detalle = 'SSID/senal no disponibles: Windows pide el permiso de Ubicacion (y en este equipo tambien ejecutar como administrador). Ver nota en el log.'
+        } elseif ($salidaWifi.Count -gt 0) {
             $info.Detalle = 'conectado, pero no se pudo leer el SSID (ver detalle DEBUG al inicio del log)'
         } else {
             $info.Detalle = 'no se pudo leer "netsh wlan show interfaces" (ver detalle DEBUG al inicio del log)'
@@ -342,7 +369,7 @@ function Registrar-Evento ($nombre, $t) {
 }
 
 # ======================================================================
-#  Reporte completo. $modo: 'parcial' (tecla S), 'final' (tecla Q)
+#  Reporte completo. $modo: 'parcial' (tecla S), 'final' (tecla Q o Ctrl+C)
 #  o 'periodico' (se guarda solo en el log cada 1 minuto, automatico)
 # ======================================================================
 function Construir-Reporte ($modo) {
@@ -456,7 +483,7 @@ function Dibujar-Panel {
     [void]$lineas.Add(@{ T = " Router/Modem: $routerIP | ISP: $(if ($ispIP -ne $null) { $ispIP } else { 'no detectado' }) | Cloudflare: $dnsCloudflare | Google: $dnsGoogle"; C = 'Gray' })
     [void]$lineas.Add(@{ T = $lineaConexion; C = 'Gray' })
     [void]$lineas.Add(@{ T = " Duracion: $transcurrido | Registro periodico cada $($U_SegundosRegistroPeriodico)s | Log: $logFile"; C = 'Gray' })
-    [void]$lineas.Add(@{ T = " [S] Reporte completo y pausa  [C] Continuar  [Q] Finalizar y ver diagnostico"; C = 'Cyan' })
+    [void]$lineas.Add(@{ T = " [S] Reporte y pausa  [C] Continuar  [Q] o Ctrl+C: Finalizar y ver diagnostico"; C = 'Cyan' })
     [void]$lineas.Add(@{ T = $sep; C = 'Cyan' })
 
     $fmt = '{0,-14}{1,7}{2,6}{3,5}{4,5}{5,5}{6,6}{7,6}{8,7}{9,6}{10,7}'
@@ -509,6 +536,11 @@ function Dibujar-Panel {
     [Console]::SetCursorPosition(0, $h - 1)
 }
 
+# --- Detecta si una tecla leida es Ctrl+C ---
+function Es-CtrlC ($key) {
+    return (($key.Modifiers -band [ConsoleModifiers]::Control) -and ($key.Key -eq 'C'))
+}
+
 # ======================================================================
 #  Pausa con reporte completo. Devuelve $true si el usuario eligio salir.
 # ======================================================================
@@ -517,16 +549,16 @@ function Modo-Snapshot {
     $txt = Construir-Reporte 'parcial'
     Write-Host $txt -ForegroundColor Yellow
     Add-Content -Path $logFile -Value $txt
-    Write-Host ">>> MONITOREO EN PAUSA. Presiona 'C' para continuar o 'Q' para finalizar <<<" -ForegroundColor Cyan
+    Write-Host ">>> MONITOREO EN PAUSA. Presiona 'C' para continuar, o 'Q'/Ctrl+C para finalizar <<<" -ForegroundColor Cyan
     while ($true) {
         if ([Console]::KeyAvailable) {
             $k = [Console]::ReadKey($true)
+            if ((Es-CtrlC $k) -or ($k.Key -eq 'Q')) { return $true }
             if ($k.Key -eq 'C') {
                 Clear-Host
                 $global:anchoPrevio = 0
                 return $false
             }
-            if ($k.Key -eq 'Q') { return $true }
         }
         Start-Sleep -Milliseconds 100
     }
@@ -538,9 +570,9 @@ function Modo-Snapshot {
 Add-Content -Path $logFile -Value ("`r`n--- NUEVA SESION DE DIAGNOSTICO: " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + ' ---')
 Add-Content -Path $logFile -Value ("Conexion: $($conexion.Tipo) | ISP detectado: $(if ($ispIP -ne $null) { $ispIP } else { 'no' })")
 
-# Si es Wi-Fi y no se pudo leer el SSID, volcar la salida cruda de netsh
-# al log DESDE EL ARRANQUE (no hace falta esperar a un snapshot).
-if (($conexion.Tipo -eq 'Wi-Fi') -and ($conexion.SSID -eq '')) {
+if (($conexion.Tipo -eq 'Wi-Fi') -and ($conexion.SSID -eq '') -and ($conexion.PermisoFaltante)) {
+    Add-Content -Path $logFile -Value 'NOTA: no se pudo leer SSID/senal por netsh. Windows exige el permiso de Ubicacion (Configuracion > Privacidad y seguridad > Ubicacion), y en este equipo ademas pide ejecutar el .bat como administrador. El SSID por Get-NetConnectionProfile tampoco se pudo obtener en esta sesion.'
+} elseif (($conexion.Tipo -eq 'Wi-Fi') -and ($conexion.SSID -eq '')) {
     Add-Content -Path $logFile -Value "DEBUG - salida cruda de 'netsh wlan show interfaces' (para ajustar la deteccion del SSID):"
     if ($conexion.Cruda.Count -eq 0) {
         Add-Content -Path $logFile -Value '  (el comando no devolvio ninguna linea)'
@@ -551,6 +583,7 @@ if (($conexion.Tipo -eq 'Wi-Fi') -and ($conexion.SSID -eq '')) {
 }
 
 [Console]::CursorVisible = $false
+[Console]::TreatControlCAsInput = $true
 Clear-Host
 
 $salir = $false
@@ -615,7 +648,7 @@ while (-not $salir) {
     for ($k = 0; $k -lt 10; $k++) {
         if ([Console]::KeyAvailable) {
             $key = [Console]::ReadKey($true)
-            if ($key.Key -eq 'Q') {
+            if ((Es-CtrlC $key) -or ($key.Key -eq 'Q')) {
                 $salir = $true
                 break
             }
@@ -629,6 +662,7 @@ while (-not $salir) {
 }
 
 # --- Resumen final ---
+[Console]::TreatControlCAsInput = $false
 [Console]::CursorVisible = $true
 Clear-Host
 $final = Construir-Reporte 'final'
