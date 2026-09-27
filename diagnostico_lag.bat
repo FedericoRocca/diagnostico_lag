@@ -1,6 +1,6 @@
 <# :
 @echo off
-title Diagnostico de Red - Gaming
+title Network Diagnostics - Gaming
 set "SCRIPT_DIR=%~dp0"
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-Expression -Command (Get-Content -LiteralPath '%~f0' -Raw)"
 pause
@@ -8,63 +8,66 @@ exit /b
 #>
 
 # ======================================================================
-#  DIAGNOSTICO DE LAG EN VIVO - Red local / ISP / Internet
-#  Panel fijo arriba (se actualiza cada segundo) + ultimas mediciones abajo.
-#  Cada 1 minuto se guarda un registro periodico completo en el log.
-#  Teclas: S = reporte completo y pausa, C = continuar, Q = finalizar
-#  Ctrl+C tambien finaliza de forma prolija (guarda el resumen final).
-#  Tip: maximiza la ventana para ver mas mediciones debajo del panel.
+#  LIVE LAG DIAGNOSTICS - Local network / ISP / Internet / LoL server
+#  Fixed live panel on top (refreshes every second) + latest samples below.
+#  Every 1 minute a full periodic snapshot is saved to the log.
+#  Keys: S = full report and pause, C = continue, Q = finish
+#  Ctrl+C also finishes cleanly (saves the final summary first).
+#  Tip: maximize the window to see more samples below the panel.
 # ======================================================================
 
 $ErrorActionPreference = 'SilentlyContinue'
 
-# --- Destinos ---
+# --- Targets ---
 $dnsCloudflare = '1.1.1.1'
 $dnsGoogle     = '8.8.8.8'
-$puertoTcp     = 443   # HTTPS: siempre deberia estar abierto en ambos destinos
+$puertoTcp     = 443   # HTTPS: should always be open on both targets
 
-# --- Umbrales del diagnostico (editables) ---
-$U_RouterPromedioProblema = 20    # ms: promedio al router = problema
-$U_RouterJitterProblema   = 8     # ms: jitter al router = problema
-$U_RouterJitterAviso      = 5     # ms: jitter al router = aviso
-$U_RouterP95Aviso         = 10    # ms: el 5% de los pings llega a esto = aviso
-$U_RouterP99Aviso         = 30    # ms: el 1% de los pings llega a esto = aviso
-$U_RouterMaxAviso         = 150   # ms: un solo pico asi de alto = aviso
-$U_SenalWifiBaja          = 50    # %: senal Wi-Fi por debajo de esto = aviso
-$U_SegundosRegistroPeriodico = 60 # segundos entre registros periodicos en el log
-$U_TcpPromedioProblema    = 150   # ms: promedio de conexion TCP real = problema
-$U_TcpJitterProblema      = 20    # ms: jitter de conexion TCP real = problema
+# --- Diagnosis thresholds (editable) ---
+$U_RouterPromedioProblema = 20    # ms: average to router = problem
+$U_RouterJitterProblema   = 8     # ms: jitter to router = problem
+$U_RouterJitterAviso      = 5     # ms: jitter to router = warning
+$U_RouterP95Aviso         = 10    # ms: 5% of pings reach this = warning
+$U_RouterP99Aviso         = 30    # ms: 1% of pings reach this = warning
+$U_RouterMaxAviso         = 150   # ms: a single spike this high = warning
+$U_SenalWifiBaja          = 50    # %: Wi-Fi signal below this = warning
+$U_SegundosRegistroPeriodico = 60 # seconds between periodic log entries
+$U_TcpPromedioProblema    = 150   # ms: real TCP connection average = problem
+$U_TcpJitterProblema      = 20    # ms: real TCP connection jitter = problem
 
-# --- Linea base personal: se toma de las primeras N muestras de la sesion ---
-$U_MuestrasBaseline        = 60   # ~1 minuto a 1 muestra/seg
-$U_BaselineFactorProm      = 3    # el promedio actual debe ser N veces la base...
-$U_BaselineMinDeltaProm    = 5    # ...y ademas superarla por al menos esto (ms)
+# --- Personal baseline: taken from the first N samples of the session ---
+$U_MuestrasBaseline        = 60   # ~1 minute at 1 sample/sec
+$U_BaselineFactorProm      = 3    # current average must be N times the baseline...
+$U_BaselineMinDeltaProm    = 5    # ...and also exceed it by at least this (ms)
 $U_BaselineFactorJitter    = 3
 $U_BaselineMinDeltaJitter  = 5
 
-# --- Deteccion de patrones periodicos en los eventos (picos/perdidas) ---
-$U_MinEventosPeriodicidad  = 4    # minimo de eventos para intentar detectar un patron
-$U_MinEventosConfianza     = 6    # a partir de aca se reporta con mas confianza
-$U_MinSegundosPeriodo      = 10   # eventos mas seguidos que esto no se tratan como "periodicos"
-$U_MaxCoefVariacion        = 0.25 # que tan parejos deben ser los intervalos (0 = identicos)
+# --- Periodic pattern detection in events (spikes/losses) ---
+$U_MinEventosPeriodicidad  = 4    # minimum events to attempt pattern detection
+$U_MinEventosConfianza     = 6    # from this many events on, report with more confidence
+$U_MinSegundosPeriodo      = 10   # events closer together than this aren't treated as "periodic"
+$U_MaxCoefVariacion        = 0.25 # how even the intervals must be (0 = identical)
 
-# --- El log se guarda junto a este .bat ---
+# --- Automatic LoL server detection (best effort, no admin required) ---
+$U_SegundosReintentoLol = 15  # how often to retry detecting the LoL client while not found yet
+
+# --- The log is saved next to this .bat ---
 $baseDir = $env:SCRIPT_DIR
 if ([string]::IsNullOrEmpty($baseDir)) { $baseDir = (Get-Location).Path }
 $logFile = Join-Path -Path $baseDir -ChildPath 'registro_latencia.txt'
 
-# --- Formatea "N de TOTAL muestras (X%)" para cualquier conteo que se muestre ---
+# --- Formats "N of TOTAL samples (X%)" for any count shown ---
 function Formato-Conteo ($cantidad, $total) {
     $pct = 0
     if ($total -gt 0) { $pct = [math]::Round(($cantidad / $total) * 100, 1) }
-    return "$cantidad de $total muestras ($pct%)"
+    return "$cantidad of $total samples ($pct%)"
 }
 
 function Formato-Duracion ($desde) {
     return ((Get-Date) - $desde).ToString('hh\:mm\:ss')
 }
 
-# --- Ping ICMP preciso a nivel .NET: devuelve ms o -1 si se perdio el paquete ---
+# --- Precise ICMP ping at the .NET level: returns ms, or -1 if the packet was lost ---
 function Get-PingTime ($Address) {
     try {
         $ping = New-Object System.Net.NetworkInformation.Ping
@@ -78,9 +81,9 @@ function Get-PingTime ($Address) {
     }
 }
 
-# --- "Ping" TCP real: tiempo de conexion (SYN-ACK) a un puerto. Mas parecido
-#     al trafico real de una app/juego que el ICMP, que muchos equipos
-#     intermedios priorizan distinto (o ni responden). ---
+# --- Real TCP "ping": connection time (SYN-ACK) to a port. Closer to the
+#     real traffic of an app/game than ICMP, which many intermediate
+#     devices prioritize differently (or don't answer at all). ---
 function Get-TcpConnectTime ($Address, $Port, $TimeoutMs) {
     $cliente = $null
     try {
@@ -102,7 +105,7 @@ function Get-TcpConnectTime ($Address, $Port, $TimeoutMs) {
     }
 }
 
-# --- Detectar la puerta de enlace (router/modem) automaticamente ---
+# --- Auto-detect the default gateway (router/modem) ---
 $routerIP = ''
 $adapters = Get-CimInstance -ClassName Win32_NetworkAdapterConfiguration -Filter 'IPEnabled = TRUE'
 foreach ($adapter in $adapters) {
@@ -113,14 +116,14 @@ foreach ($adapter in $adapters) {
     }
 }
 if ($routerIP -eq '') {
-    $routerIP = Read-Host 'No se detecto el router. Ingresa la IP manualmente (ej. 192.168.1.1)'
+    $routerIP = Read-Host 'Router not detected. Enter its IP manually (e.g. 192.168.1.1)'
 }
 
 # ======================================================================
-#  Primer salto del ISP: el equipo justo despues del router, via tracert.
-#  OJO: muchos routers intermedios responden al ping con menor prioridad
-#  que al trafico que solo atraviesan, asi que estos valores pueden salir
-#  inflados. Se usan como pista, no como confirmacion por si solos.
+#  ISP first hop: the device right after the router, found via tracert.
+#  NOTE: many intermediate routers reply to ping with lower priority than
+#  the traffic they just forward, so these numbers can look inflated.
+#  Used as a clue, not as confirmation by itself.
 # ======================================================================
 function Obtener-Saltos ($destino, $maxSaltos) {
     $saltos = @{}
@@ -147,19 +150,19 @@ function Detectar-SaltoISP ($routerIP, $destino) {
     return $null
 }
 
-Write-Host 'Detectando el primer salto de tu proveedor (ISP)...' -ForegroundColor Cyan
+Write-Host 'Detecting your ISP first hop...' -ForegroundColor Cyan
 $ispIP = Detectar-SaltoISP $routerIP $dnsCloudflare
 if ($ispIP -eq $dnsCloudflare) { $ispIP = $null }
 
 # ======================================================================
-#  Tipo de conexion (Wi-Fi/cable), SSID y senal.
-#  El SSID se obtiene primero via Get-NetConnectionProfile, que NO
-#  requiere permiso de ubicacion ni ser administrador. La senal (%) si
-#  depende de netsh, que en Windows 10/11 exige el permiso de Ubicacion
-#  y, en algunos equipos, tambien ejecutar como administrador.
+#  Connection type (Wi-Fi/cable), SSID and signal.
+#  The SSID is obtained first via Get-NetConnectionProfile, which does NOT
+#  require the location permission or admin rights. The signal (%) does
+#  depend on netsh, which on Windows 10/11 requires the Location
+#  permission and, on some machines, also running as administrator.
 # ======================================================================
 function Obtener-InfoConexion {
-    $info = @{ Tipo = 'No detectado'; Detalle = ''; Senal = $null; SSID = ''; Cruda = @(); PermisoFaltante = $false }
+    $info = @{ Tipo = 'Not detected'; Detalle = ''; Senal = $null; SSID = ''; Cruda = @(); PermisoFaltante = $false }
     $ruta = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Sort-Object -Property RouteMetric | Select-Object -First 1
     if (-not $ruta) { return $info }
 
@@ -175,7 +178,7 @@ function Obtener-InfoConexion {
         $salidaWifi = @(& netsh.exe wlan show interfaces 2>$null)
         $info.Cruda = $salidaWifi
         $textoCompleto = ($salidaWifi -join ' ')
-        if ($textoCompleto -match '(?i)elevaci|administrador|permiso de ubicaci') {
+        if ($textoCompleto -match '(?i)elevation|administrator|location permission|elevaci|administrador|permiso de ubicaci') {
             $info.PermisoFaltante = $true
         } else {
             $pares = @{}
@@ -201,17 +204,17 @@ function Obtener-InfoConexion {
             $info.Detalle = "SSID: $($info.SSID)"
             if ($info.Senal -eq $null) {
                 if ($info.PermisoFaltante) {
-                    $info.Detalle += ' (senal no disponible: netsh pide permiso de ubicacion/admin)'
+                    $info.Detalle += ' (signal unavailable: netsh requires location permission/admin)'
                 } else {
-                    $info.Detalle += ' (senal no disponible)'
+                    $info.Detalle += ' (signal unavailable)'
                 }
             }
         } elseif ($info.PermisoFaltante) {
-            $info.Detalle = 'SSID/senal no disponibles: Windows pide el permiso de Ubicacion (y en este equipo tambien ejecutar como administrador). Ver nota en el log.'
+            $info.Detalle = 'SSID/signal unavailable: Windows requires the Location permission (and on this machine also running as administrator). See note in the log.'
         } elseif ($salidaWifi.Count -gt 0) {
-            $info.Detalle = 'conectado, pero no se pudo leer el SSID (ver detalle DEBUG al inicio del log)'
+            $info.Detalle = 'connected, but could not read the SSID (see DEBUG detail at the top of the log)'
         } else {
-            $info.Detalle = 'no se pudo leer "netsh wlan show interfaces" (ver detalle DEBUG al inicio del log)'
+            $info.Detalle = 'could not read "netsh wlan show interfaces" (see DEBUG detail at the top of the log)'
         }
     } else {
         $info.Tipo = 'Cable (Ethernet)'
@@ -223,8 +226,49 @@ function Obtener-InfoConexion {
 $conexion = Obtener-InfoConexion
 
 # ======================================================================
-#  Estadisticas incrementales (no guardan cada muestra: usan contadores
-#  y un histograma de 0 a 1000 ms, asi el panel no se vuelve lento)
+#  Automatic LoL server detection (best effort, no admin required).
+#  League of Legends match traffic runs over UDP, which the OS does not
+#  expose a remote peer for via built-in tools without admin rights.
+#  As a workaround, this looks at the TCP connections the League client
+#  process currently has established and uses the first public IP found
+#  as an approximation of the route to Riot's infrastructure. It is NOT
+#  guaranteed to be the exact game server for the current match.
+# ======================================================================
+function Buscar-ProcesoLoL {
+    $nombres = @('League of Legends', 'LeagueClientUx', 'LeagueClient')
+    foreach ($n in $nombres) {
+        $p = Get-Process -Name $n -ErrorAction SilentlyContinue
+        if ($p) { return $p }
+    }
+    return $null
+}
+
+function Buscar-EndpointLoL {
+    $procesos = Buscar-ProcesoLoL
+    if (-not $procesos) { return $null }
+    $procIds = $procesos | Select-Object -ExpandProperty Id
+    $procNombre = ($procesos | Select-Object -First 1).ProcessName
+    $conexiones = Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
+        Where-Object { $procIds -contains $_.OwningProcess } |
+        Sort-Object -Property CreationTime -Descending
+    foreach ($c in $conexiones) {
+        $ip = $c.RemoteAddress
+        if ([string]::IsNullOrEmpty($ip)) { continue }
+        if ($ip -match '^(10\.|127\.|169\.254\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|::1|fe80|0\.0\.0\.0)') { continue }
+        return @{ IP = $ip; Port = $c.RemotePort; Proceso = $procNombre }
+    }
+    return $null
+}
+
+$lolIP = $null
+$lolPort = $null
+$statLolIcmp = $null
+$statLolTcp = $null
+$ultimoIntentoLol = (Get-Date).AddSeconds(-$U_SegundosReintentoLol)
+
+# ======================================================================
+#  Incremental statistics (samples aren't stored individually: counters
+#  and a 0-1000ms histogram are used instead, so the panel stays fast)
 # ======================================================================
 function Nuevo-Stat {
     return @{ Total = 0; Ok = 0; Perdidos = 0; Suma = 0; Max = 0; Prev = -1; SumaDif = 0; DifN = 0; S80 = 0; S120 = 0; Hist = (@(0) * 1001) }
@@ -285,8 +329,8 @@ function Resumen-Stats ($s) {
     }
 }
 
-# Picos relevantes = cantidad absoluta Y proporcion de las muestras:
-#   3 o mas de 120 ms (y 0.5% o mas)  o  5 o mas de 80 ms (y 1% o mas)
+# Meaningful spikes = absolute count AND share of samples:
+#   3+ of 120ms+ (and 0.5%+)  or  5+ of 80ms+ (and 1%+)
 function Hay-Picos ($x) {
     if ($x.Total -le 0) { return $false }
     $p120 = $x.Spikes120
@@ -299,11 +343,11 @@ function Hay-Picos ($x) {
 }
 
 # ======================================================================
-#  Deteccion de patrones periodicos: mira los intervalos entre eventos
-#  (picos >=120ms o perdidas) de un mismo objetivo. Si los intervalos son
-#  parejos entre si (coeficiente de variacion bajo), es mas probable que
-#  sea una tarea que se repite (DFS de Wi-Fi, sincronizacion, backup) que
-#  ruido al azar. Lee $eventosTiempos directamente (definida mas abajo).
+#  Periodic pattern detection: looks at the intervals between events
+#  (spikes >=120ms or losses) for a given target. If the intervals are
+#  even (low coefficient of variation), it's more likely a recurring
+#  task (Wi-Fi DFS scan, sync, backup) than random noise. Reads
+#  $eventosTiempos directly (defined further below).
 # ======================================================================
 function Detectar-Periodicidad ($nombre) {
     if (-not $eventosTiempos.ContainsKey($nombre)) { return $null }
@@ -330,31 +374,31 @@ function Detectar-Periodicidad ($nombre) {
 }
 
 # ======================================================================
-#  Diagnostico: OK / ATENCION / PROBLEMA (local, ISP o internet general)
-#  Lee $baseline y $eventosTiempos directamente (session-state, mas abajo).
+#  Diagnosis: OK / ATTENTION / PROBLEM (local, ISP, internet, or LoL)
+#  Reads $baseline and $eventosTiempos directly (session state, below).
 # ======================================================================
-function Evaluar-Diagnostico ($r, $i, $c, $g, $cTcp, $gTcp, $conexion) {
+function Evaluar-Diagnostico ($r, $i, $c, $g, $cTcp, $gTcp, $lolI, $lolT, $conexion) {
     $probLocal = @()
     $probIsp = @()
     $avisos = @()
 
-    # --- Router / red local ---
-    if ($r.Perdida -ge 5) { $probLocal += "Router/modem: perdida de paquetes: $(Formato-Conteo $r.PerdidosN $r.Total)" }
-    if ($r.Promedio -gt $U_RouterPromedioProblema) { $probLocal += "Router/modem: latencia promedio alta ($($r.Promedio) ms sobre $($r.Total) muestras)" }
-    if ($r.Jitter -gt $U_RouterJitterProblema) { $probLocal += "Router/modem: jitter alto ($($r.Jitter) ms sobre $($r.Total) muestras)" }
-    if (Hay-Picos $r) { $probLocal += "Router/modem: picos frecuentes ($(Formato-Conteo $r.Spikes120 $r.Total) de 120 ms o mas, $(Formato-Conteo $r.Spikes80 $r.Total) de 80-119 ms)" }
+    # --- Router / local network ---
+    if ($r.Perdida -ge 5) { $probLocal += "Router/modem: packet loss: $(Formato-Conteo $r.PerdidosN $r.Total)" }
+    if ($r.Promedio -gt $U_RouterPromedioProblema) { $probLocal += "Router/modem: high average latency ($($r.Promedio) ms over $($r.Total) samples)" }
+    if ($r.Jitter -gt $U_RouterJitterProblema) { $probLocal += "Router/modem: high jitter ($($r.Jitter) ms over $($r.Total) samples)" }
+    if (Hay-Picos $r) { $probLocal += "Router/modem: frequent spikes ($(Formato-Conteo $r.Spikes120 $r.Total) at 120ms+, $(Formato-Conteo $r.Spikes80 $r.Total) at 80-119ms)" }
 
-    if ($r.Maximo -ge $U_RouterMaxAviso) { $avisos += "Router/modem: pico maximo de $($r.Maximo) ms (sobre $($r.Total) muestras totales)" }
-    if ($r.P95 -gt $U_RouterP95Aviso) { $avisos += "Router/modem: el 5% de los pings mas lentos llega a $($r.P95) ms o mas (P95, sobre $($r.Total) muestras)" }
-    if ($r.P99 -gt $U_RouterP99Aviso) { $avisos += "Router/modem: el 1% de los pings mas lentos llega a $($r.P99) ms o mas (P99, sobre $($r.Total) muestras)" }
-    if (($r.Jitter -gt $U_RouterJitterAviso) -and ($r.Jitter -le $U_RouterJitterProblema)) { $avisos += "Router/modem: jitter de $($r.Jitter) ms (en una red local sana suele ser de pocos ms)" }
-    if (($r.Perdida -gt 0.5) -and ($r.Perdida -lt 5)) { $avisos += "Router/modem: perdida de paquetes: $(Formato-Conteo $r.PerdidosN $r.Total)" }
+    if ($r.Maximo -ge $U_RouterMaxAviso) { $avisos += "Router/modem: max spike of $($r.Maximo) ms (over $($r.Total) total samples)" }
+    if ($r.P95 -gt $U_RouterP95Aviso) { $avisos += "Router/modem: the slowest 5% of pings reach $($r.P95) ms or more (P95, over $($r.Total) samples)" }
+    if ($r.P99 -gt $U_RouterP99Aviso) { $avisos += "Router/modem: the slowest 1% of pings reach $($r.P99) ms or more (P99, over $($r.Total) samples)" }
+    if (($r.Jitter -gt $U_RouterJitterAviso) -and ($r.Jitter -le $U_RouterJitterProblema)) { $avisos += "Router/modem: jitter of $($r.Jitter) ms (a healthy local network is usually just a few ms)" }
+    if (($r.Perdida -gt 0.5) -and ($r.Perdida -lt 5)) { $avisos += "Router/modem: packet loss: $(Formato-Conteo $r.PerdidosN $r.Total)" }
 
     if (($conexion.Tipo -eq 'Wi-Fi') -and ($conexion.Senal -ne $null) -and ($conexion.Senal -lt $U_SenalWifiBaja)) {
-        $avisos += "Senal Wi-Fi baja ($($conexion.Senal)%): puede ser la causa de picos intermitentes"
+        $avisos += "Low Wi-Fi signal ($($conexion.Senal)%): could be causing intermittent spikes"
     }
 
-    # --- Internet: ICMP (ping) + TCP real (puerto 443) por separado ---
+    # --- Internet: ICMP (ping) + real TCP (port 443), compared separately ---
     $objetivosIcmp = @{ 'Cloudflare' = $c; 'Google' = $g }
     $objetivosTcp  = @{ 'Cloudflare' = $cTcp; 'Google' = $gTcp }
     foreach ($nom in @('Cloudflare', 'Google')) {
@@ -365,89 +409,109 @@ function Evaluar-Diagnostico ($r, $i, $c, $g, $cTcp, $gTcp, $conexion) {
         $probTcp  = ($xt.Perdida -gt 3) -or ($xt.Promedio -gt $U_TcpPromedioProblema) -or ($xt.Jitter -gt $U_TcpJitterProblema) -or (Hay-Picos $xt)
 
         if ($probIcmp -and $probTcp) {
-            $probIsp += "${nom}: problema confirmado por ICMP y por TCP real al puerto $puertoTcp (TCP: jitter $($xt.Jitter) ms, $(Formato-Conteo $xt.Spikes120 $xt.Total) picos >=120ms, perdida $($xt.Perdida)%)"
+            $probIsp += "${nom}: problem confirmed by both ICMP and real TCP on port $puertoTcp (TCP: jitter $($xt.Jitter) ms, $(Formato-Conteo $xt.Spikes120 $xt.Total) spikes >=120ms, loss $($xt.Perdida)%)"
         }
         elseif ($probTcp -and (-not $probIcmp)) {
-            $probIsp += "${nom}: la conexion TCP real (puerto $puertoTcp) tiene problemas aunque el ping ICMP esta limpio -- esto es mas representativo del trafico real que un juego generaria (TCP: jitter $($xt.Jitter) ms, $(Formato-Conteo $xt.Spikes120 $xt.Total) picos >=120ms)"
+            $probIsp += "${nom}: the real TCP connection (port $puertoTcp) has problems even though the ICMP ping is clean -- this is more representative of the real traffic a game would generate (TCP: jitter $($xt.Jitter) ms, $(Formato-Conteo $xt.Spikes120 $xt.Total) spikes >=120ms)"
         }
         elseif ($probIcmp -and (-not $probTcp)) {
-            $avisos += "${nom}: el ping ICMP muestra anomalias pero la conexion TCP real (puerto $puertoTcp) esta limpia -- podria ser solo el ICMP despriorizado, no necesariamente afecta al juego"
+            $avisos += "${nom}: the ICMP ping shows anomalies but the real TCP connection (port $puertoTcp) is clean -- this could just be ICMP being deprioritized, not necessarily affecting the game"
         }
 
-        if ($x.Maximo -ge 200) { $avisos += "${nom} (ICMP): pico maximo de $($x.Maximo) ms (sobre $($x.Total) muestras totales)" }
-        if ($xt.Maximo -ge 250) { $avisos += "${nom} (TCP): conexion tardo hasta $($xt.Maximo) ms (sobre $($xt.Total) intentos totales)" }
+        if ($x.Maximo -ge 200) { $avisos += "${nom} (ICMP): max spike of $($x.Maximo) ms (over $($x.Total) total samples)" }
+        if ($xt.Maximo -ge 250) { $avisos += "${nom} (TCP): connection took up to $($xt.Maximo) ms (over $($xt.Total) total attempts)" }
     }
 
-    # --- Salto ISP: solo corrobora si Internet YA muestra problemas ---
+    # --- LoL server (if detected during the session) ---
+    if ($lolI -ne $null) {
+        $probIcmpLol = ($lolI.Perdida -gt 3) -or ($lolI.Promedio -gt 100) -or ($lolI.Jitter -gt 15) -or (Hay-Picos $lolI)
+        $probTcpLol  = ($lolT.Perdida -gt 3) -or ($lolT.Promedio -gt $U_TcpPromedioProblema) -or ($lolT.Jitter -gt $U_TcpJitterProblema) -or (Hay-Picos $lolT)
+
+        if ($probIcmpLol -and $probTcpLol) {
+            $probIsp += "LoL server ($lolIP): problem confirmed by both ICMP and real TCP (TCP: jitter $($lolT.Jitter) ms, $(Formato-Conteo $lolT.Spikes120 $lolT.Total) spikes >=120ms, loss $($lolT.Perdida)%)"
+        }
+        elseif ($probTcpLol -and (-not $probIcmpLol)) {
+            $probIsp += "LoL server ($lolIP): the real TCP connection has problems even though ICMP looks clean (TCP: jitter $($lolT.Jitter) ms, $(Formato-Conteo $lolT.Spikes120 $lolT.Total) spikes >=120ms)"
+        }
+        elseif ($probIcmpLol -and (-not $probTcpLol)) {
+            if ($lolI.Perdida -ge 100) {
+                $avisos += "LoL server ($lolIP): does not answer ICMP at all (100% loss) -- common for game servers that block ping. The TCP line for this target is the more reliable signal."
+            } else {
+                $avisos += "LoL server ($lolIP): ICMP shows anomalies but the real TCP connection is clean -- this could just be ICMP being deprioritized"
+            }
+        }
+    }
+
+    # --- ISP hop: only corroborates if Internet ALREADY shows problems ---
     if (($i -ne $null) -and ($probIsp.Count -gt 0)) {
         if ((Hay-Picos $i) -or ($i.Perdida -gt 3) -or ($i.Jitter -gt 15)) {
-            $probIsp += "Confirmado tambien en el primer salto de tu ISP: jitter $($i.Jitter) ms, perdida $(Formato-Conteo $i.PerdidosN $i.Total), $(Formato-Conteo $i.Spikes120 $i.Total) picos de 120 ms o mas"
+            $probIsp += "Also confirmed at your ISP's first hop: jitter $($i.Jitter) ms, loss $(Formato-Conteo $i.PerdidosN $i.Total), $(Formato-Conteo $i.Spikes120 $i.Total) spikes at 120ms or more"
         }
     }
 
-    # --- Pista: picos solo en el router, limpios rio abajo, sugiere Wi-Fi/router y no el ISP ---
+    # --- Clue: spikes only on the router, clean downstream, points to Wi-Fi/router, not the ISP ---
     if ((Hay-Picos $r) -and (-not (Hay-Picos $c)) -and (-not (Hay-Picos $g)) -and (($i -eq $null) -or (-not (Hay-Picos $i)))) {
-        $avisos += "Los picos del router NO se repiten en el salto del ISP ni en Cloudflare/Google, aunque ese trafico tambien pasa por el router: esto apunta a Wi-Fi o al propio router, no a tu proveedor"
+        $avisos += "The router's spikes do NOT repeat at the ISP hop or at Cloudflare/Google, even though that traffic also passes through the router: this points to Wi-Fi or the router itself, not your provider"
     }
 
-    # --- Linea base personal (primeras $U_MuestrasBaseline muestras de la sesion) ---
+    # --- Personal baseline (first $U_MuestrasBaseline samples of the session) ---
     if ($baseline -ne $null) {
         $bR = $baseline.Router
         if (($bR.Promedio -gt 0) -and ($r.Promedio -ge ($bR.Promedio * $U_BaselineFactorProm)) -and (($r.Promedio - $bR.Promedio) -ge $U_BaselineMinDeltaProm)) {
-            $avisos += "Router/modem: promedio actual ($($r.Promedio) ms) muy por encima de tu propia referencia inicial ($($bR.Promedio) ms, primeras $U_MuestrasBaseline muestras)"
+            $avisos += "Router/modem: current average ($($r.Promedio) ms) is much higher than your own initial baseline ($($bR.Promedio) ms, first $U_MuestrasBaseline samples)"
         }
         $umbralJR = [math]::Max($bR.Jitter * $U_BaselineFactorJitter, $bR.Jitter + $U_BaselineMinDeltaJitter)
         if (($r.Jitter -ge $umbralJR) -and ($r.Jitter -gt 3)) {
-            $avisos += "Router/modem: jitter actual ($($r.Jitter) ms) muy por encima de tu referencia inicial ($($bR.Jitter) ms)"
+            $avisos += "Router/modem: current jitter ($($r.Jitter) ms) is much higher than your baseline ($($bR.Jitter) ms)"
         }
 
         $bC = $baseline.Cloud
         if (($bC.Promedio -gt 0) -and ($c.Promedio -ge ($bC.Promedio * $U_BaselineFactorProm)) -and (($c.Promedio - $bC.Promedio) -ge $U_BaselineMinDeltaProm)) {
-            $avisos += "Cloudflare: promedio actual ($($c.Promedio) ms) muy por encima de tu referencia inicial ($($bC.Promedio) ms)"
+            $avisos += "Cloudflare: current average ($($c.Promedio) ms) is much higher than your baseline ($($bC.Promedio) ms)"
         }
 
         $bG = $baseline.Google
         if (($bG.Promedio -gt 0) -and ($g.Promedio -ge ($bG.Promedio * $U_BaselineFactorProm)) -and (($g.Promedio - $bG.Promedio) -ge $U_BaselineMinDeltaProm)) {
-            $avisos += "Google: promedio actual ($($g.Promedio) ms) muy por encima de tu referencia inicial ($($bG.Promedio) ms)"
+            $avisos += "Google: current average ($($g.Promedio) ms) is much higher than your baseline ($($bG.Promedio) ms)"
         }
     }
 
-    # --- Patrones periodicos en los eventos de cada objetivo ---
-    foreach ($nombreObjetivo in @('Router/Modem', 'ISP (1er salto)', 'Cloudflare', 'Google')) {
+    # --- Periodic patterns in each target's events ---
+    foreach ($nombreObjetivo in @('Router/Modem', 'ISP (1st hop)', 'Cloudflare', 'Google', 'LoL')) {
         $patron = Detectar-Periodicidad $nombreObjetivo
         if ($patron -ne $null) {
             $confianza = ''
-            if ($patron.Cantidad -lt $U_MinEventosConfianza) { $confianza = ' (pocos eventos todavia, tomalo como indicio)' }
-            $avisos += "${nombreObjetivo}: patron periodico detectado -- eventos cada ~$($patron.Promedio)s (+/- $($patron.Desvio)s, sobre $($patron.Cantidad) eventos)$confianza. Tipico de tareas programadas, sincronizaciones, o en Wi-Fi 5GHz de un barrido DFS del router; revisa el Programador de tareas de Windows y, si es Wi-Fi, probar fijar un canal 5GHz no-DFS (36/40/44/48 o 149+)"
+            if ($patron.Cantidad -lt $U_MinEventosConfianza) { $confianza = ' (still few events, take this as a hint)' }
+            $avisos += "${nombreObjetivo}: periodic pattern detected -- events roughly every $($patron.Promedio)s (+/- $($patron.Desvio)s, over $($patron.Cantidad) events)$confianza. Typical of scheduled tasks, syncing, or, on 5GHz Wi-Fi, a router DFS scan; check Windows Task Scheduler and, if on Wi-Fi, try a non-DFS 5GHz channel (36/40/44/48 or 149+)"
         }
     }
 
     $res = @{}
     if ($probLocal.Count -gt 0) {
         $res.Nivel = 'PROBLEMA'
-        $res.Titulo = 'PROBLEMA EN TU RED LOCAL (CASA)'
-        $res.Explicacion = 'Hay fallas en el tramo hasta el router/modem, antes de salir a Internet.'
+        $res.Titulo = 'PROBLEM IN YOUR LOCAL NETWORK (HOME)'
+        $res.Explicacion = 'There are failures on the path up to your router/modem, before reaching the Internet.'
         $res.Motivos = $probLocal + $avisos
-        $res.Recomendacion = 'Repeti la prueba con cable Ethernet: si desaparece era el Wi-Fi; si sigue, sospecha del router/modem.'
+        $res.Recomendacion = 'Repeat the test with an Ethernet cable: if it disappears, it was Wi-Fi; if it persists, suspect the router/modem.'
     }
     elseif ($probIsp.Count -gt 0) {
         $res.Nivel = 'PROBLEMA'
-        $res.Titulo = 'PROBLEMA EN TU PROVEEDOR DE INTERNET (ISP)'
-        $res.Explicacion = 'Tu red local esta limpia hasta el router, pero la salida a Internet es inestable.'
+        $res.Titulo = 'PROBLEM WITH YOUR INTERNET PROVIDER (ISP)'
+        $res.Explicacion = 'Your local network is clean up to the router, but the connection to the Internet is unstable.'
         $res.Motivos = $probIsp + $avisos
-        $res.Recomendacion = 'Guarda este log y usalo como evidencia para reclamarle a tu ISP.'
+        $res.Recomendacion = 'Save this log and use it as evidence to file a complaint with your ISP.'
     }
     elseif ($avisos.Count -gt 0) {
         $res.Nivel = 'ATENCION'
-        $res.Titulo = 'ATENCION - ANOMALIAS PUNTUALES'
-        $res.Explicacion = 'No hay un problema sostenido, pero se registraron anomalias que pueden sentirse como tirones de lag.'
+        $res.Titulo = 'ATTENTION - ISOLATED ANOMALIES'
+        $res.Explicacion = 'There is no sustained problem, but anomalies were recorded that can feel like lag spikes.'
         $res.Motivos = $avisos
-        $res.Recomendacion = 'Deja correr mas tiempo (idealmente mientras notas el lag) y repeti con cable Ethernet para descartar el Wi-Fi.'
+        $res.Recomendacion = 'Let it run longer (ideally while you notice the lag) and repeat with an Ethernet cable to rule out Wi-Fi.'
     }
     else {
         $res.Nivel = 'OK'
-        $res.Titulo = 'TODO EN ORDEN EN LO MEDIDO'
-        $res.Explicacion = 'Sin perdida relevante, jitter bajo y sin picos frecuentes ni aislados de importancia.'
+        $res.Titulo = 'EVERYTHING LOOKS FINE IN WHAT WAS MEASURED'
+        $res.Explicacion = 'No meaningful packet loss, low jitter, and no frequent or significant isolated spikes.'
         $res.Motivos = @()
         $res.Recomendacion = ''
     }
@@ -455,7 +519,7 @@ function Evaluar-Diagnostico ($r, $i, $c, $g, $cTcp, $gTcp, $conexion) {
 }
 
 # ======================================================================
-#  Estado de la sesion
+#  Session state
 # ======================================================================
 $statR = Nuevo-Stat
 $statI = $null
@@ -487,7 +551,7 @@ function Registrar-Evento ($nombre, $t) {
     $marca = Get-Date
     $marcaTxt = $marca.ToString('HH:mm:ss')
     $esAnomalia = $false
-    if ($t -lt 0) { [void]$eventos.Add("[$marcaTxt] ${nombre}: paquete perdido"); $esAnomalia = $true }
+    if ($t -lt 0) { [void]$eventos.Add("[$marcaTxt] ${nombre}: packet lost"); $esAnomalia = $true }
     elseif ($t -ge 120) { [void]$eventos.Add("[$marcaTxt] ${nombre}: $t ms"); $esAnomalia = $true }
     if ($eventos.Count -gt 30) { $eventos.RemoveAt(0) }
 
@@ -499,11 +563,11 @@ function Registrar-Evento ($nombre, $t) {
 }
 
 # ======================================================================
-#  Reporte completo. $modo: 'parcial' (tecla S), 'final' (tecla Q o Ctrl+C)
-#  o 'periodico' (se guarda solo en el log cada 1 minuto, automatico)
+#  Full report. $modo: 'parcial' (S key), 'final' (Q key or Ctrl+C),
+#  or 'periodico' (saved only to the log every 1 minute, automatic)
 # ======================================================================
 function Construir-Reporte ($modo) {
-    if ($statR.Total -eq 0) { return 'Todavia no hay mediciones para mostrar.' }
+    if ($statR.Total -eq 0) { return 'No measurements to show yet.' }
 
     $r = Resumen-Stats $statR
     $i = $null
@@ -512,70 +576,92 @@ function Construir-Reporte ($modo) {
     $g = Resumen-Stats $statG
     $cTcp = Resumen-Stats $statCTcp
     $gTcp = Resumen-Stats $statGTcp
-    $dx = Evaluar-Diagnostico $r $i $c $g $cTcp $gTcp $conexion
+    $lolI = $null
+    $lolT = $null
+    if ($statLolIcmp -ne $null) {
+        $lolI = Resumen-Stats $statLolIcmp
+        $lolT = Resumen-Stats $statLolTcp
+    }
+    $dx = Evaluar-Diagnostico $r $i $c $g $cTcp $gTcp $lolI $lolT $conexion
     $duracion = Formato-Duracion $inicioSesion
 
-    $titulo = 'SNAPSHOT PARCIAL DE CONEXION'
-    $tituloDiag = 'DIAGNOSTICO PARCIAL (con lo medido hasta ahora)'
+    $titulo = 'PARTIAL CONNECTION SNAPSHOT'
+    $tituloDiag = 'PARTIAL DIAGNOSIS (based on the data so far)'
     if ($modo -eq 'final') {
-        $titulo = 'RESUMEN ESTADISTICO DEFINITIVO'
-        $tituloDiag = 'DIAGNOSTICO DEL SISTEMA'
+        $titulo = 'FINAL STATISTICAL SUMMARY'
+        $tituloDiag = 'SYSTEM DIAGNOSIS'
     } elseif ($modo -eq 'periodico') {
-        $titulo = 'REGISTRO PERIODICO AUTOMATICO (cada 1 minuto)'
-        $tituloDiag = 'DIAGNOSTICO AL MOMENTO DE ESTE REGISTRO'
+        $titulo = 'AUTOMATIC PERIODIC LOG ENTRY (every 1 minute)'
+        $tituloDiag = 'DIAGNOSIS AT THE TIME OF THIS LOG ENTRY'
     }
 
-    $lineaConexion = "Conexion: $($conexion.Tipo)"
-    if ($conexion.Detalle -ne '') { $lineaConexion += " ($($conexion.Detalle)" + $(if ($conexion.Senal -ne $null) { ", Senal: $($conexion.Senal)%)" } else { ")" }) }
+    $lineaConexion = "Connection: $($conexion.Tipo)"
+    if ($conexion.Detalle -ne '') { $lineaConexion += " ($($conexion.Detalle)" + $(if ($conexion.Senal -ne $null) { ", Signal: $($conexion.Senal)%)" } else { ")" }) }
 
-    $lineaBaseline = "Linea base: aun no capturada (faltan $([math]::Max(0, $U_MuestrasBaseline - $r.Total)) muestras)"
+    $lineaBaseline = "Baseline: not captured yet (missing $([math]::Max(0, $U_MuestrasBaseline - $r.Total)) samples)"
     if ($baseline -ne $null) {
-        $lineaBaseline = "Linea base (primeras $U_MuestrasBaseline muestras): Router $($baseline.Router.Promedio) ms / jitter $($baseline.Router.Jitter) ms | Cloudflare $($baseline.Cloud.Promedio) ms | Google $($baseline.Google.Promedio) ms"
+        $lineaBaseline = "Baseline (first $U_MuestrasBaseline samples): Router $($baseline.Router.Promedio) ms / jitter $($baseline.Router.Jitter) ms | Cloudflare $($baseline.Cloud.Promedio) ms | Google $($baseline.Google.Promedio) ms"
     }
+
+    $lineaLol = 'LoL server: not detected yet (open a match; detection is retried automatically)'
+    if ($lolIP -ne $null) { $lineaLol = "LoL server (approx.): $lolIP`:$lolPort" }
 
     $reporte = @"
 
 =======================================================================
                    $titulo
 =======================================================================
-Duracion de la sesion: $duracion
+Session duration: $duracion
 $lineaConexion
 $lineaBaseline
-[Router/Modem ($routerIP)] - $($r.Total) muestras totales
-- Promedio: $($r.Promedio) ms | Mediana: $($r.Mediana) ms | P95: $($r.P95) ms | P99: $($r.P99) ms | Maximo: $($r.Maximo) ms
-- Jitter: $($r.Jitter) ms | Picos 80-119ms: $($r.Spikes80) | Picos >=120ms: $($r.Spikes120) | Perdida: $($r.Perdida)% ($($r.PerdidosN) de $($r.Total))
+$lineaLol
+[Router/Modem ($routerIP)] - $($r.Total) total samples
+- Average: $($r.Promedio) ms | Median: $($r.Mediana) ms | P95: $($r.P95) ms | P99: $($r.P99) ms | Max: $($r.Maximo) ms
+- Jitter: $($r.Jitter) ms | Spikes 80-119ms: $($r.Spikes80) | Spikes >=120ms: $($r.Spikes120) | Loss: $($r.Perdida)% ($($r.PerdidosN) of $($r.Total))
 
 "@
 
     if ($i -ne $null) {
         $reporte += @"
-[Primer salto ISP ($ispIP)] - $($i.Total) muestras totales (referencia: puede estar inflado, ver nota abajo)
-- Promedio: $($i.Promedio) ms | Mediana: $($i.Mediana) ms | P95: $($i.P95) ms | P99: $($i.P99) ms | Maximo: $($i.Maximo) ms
-- Jitter: $($i.Jitter) ms | Picos 80-119ms: $($i.Spikes80) | Picos >=120ms: $($i.Spikes120) | Perdida: $($i.Perdida)% ($($i.PerdidosN) de $($i.Total))
+[ISP first hop ($ispIP)] - $($i.Total) total samples (reference only, can look inflated, see note below)
+- Average: $($i.Promedio) ms | Median: $($i.Mediana) ms | P95: $($i.P95) ms | P99: $($i.P99) ms | Max: $($i.Maximo) ms
+- Jitter: $($i.Jitter) ms | Spikes 80-119ms: $($i.Spikes80) | Spikes >=120ms: $($i.Spikes120) | Loss: $($i.Perdida)% ($($i.PerdidosN) of $($i.Total))
 
 "@
     } else {
-        $reporte += "[Primer salto ISP] No se pudo detectar automaticamente (tracert sin respuesta en los primeros saltos).`r`n`r`n"
+        $reporte += "[ISP first hop] Could not auto-detect it (tracert got no reply on the first hops).`r`n`r`n"
     }
 
     $reporte += @"
-[Cloudflare ICMP ($dnsCloudflare)] - $($c.Total) muestras totales
-- Promedio: $($c.Promedio) ms | Mediana: $($c.Mediana) ms | P95: $($c.P95) ms | P99: $($c.P99) ms | Maximo: $($c.Maximo) ms
-- Jitter: $($c.Jitter) ms | Picos 80-119ms: $($c.Spikes80) | Picos >=120ms: $($c.Spikes120) | Perdida: $($c.Perdida)% ($($c.PerdidosN) de $($c.Total))
+[Cloudflare ICMP ($dnsCloudflare)] - $($c.Total) total samples
+- Average: $($c.Promedio) ms | Median: $($c.Mediana) ms | P95: $($c.P95) ms | P99: $($c.P99) ms | Max: $($c.Maximo) ms
+- Jitter: $($c.Jitter) ms | Spikes 80-119ms: $($c.Spikes80) | Spikes >=120ms: $($c.Spikes120) | Loss: $($c.Perdida)% ($($c.PerdidosN) of $($c.Total))
 
-[Cloudflare TCP:$puertoTcp (conexion real)] - $($cTcp.Total) intentos totales
-- Promedio: $($cTcp.Promedio) ms | Mediana: $($cTcp.Mediana) ms | P95: $($cTcp.P95) ms | P99: $($cTcp.P99) ms | Maximo: $($cTcp.Maximo) ms
-- Jitter: $($cTcp.Jitter) ms | Picos 80-119ms: $($cTcp.Spikes80) | Picos >=120ms: $($cTcp.Spikes120) | Fallidas: $($cTcp.Perdida)% ($($cTcp.PerdidosN) de $($cTcp.Total))
+[Cloudflare TCP:$puertoTcp (real connection)] - $($cTcp.Total) total attempts
+- Average: $($cTcp.Promedio) ms | Median: $($cTcp.Mediana) ms | P95: $($cTcp.P95) ms | P99: $($cTcp.P99) ms | Max: $($cTcp.Maximo) ms
+- Jitter: $($cTcp.Jitter) ms | Spikes 80-119ms: $($cTcp.Spikes80) | Spikes >=120ms: $($cTcp.Spikes120) | Failed: $($cTcp.Perdida)% ($($cTcp.PerdidosN) of $($cTcp.Total))
 
-[Google ICMP ($dnsGoogle)] - $($g.Total) muestras totales
-- Promedio: $($g.Promedio) ms | Mediana: $($g.Mediana) ms | P95: $($g.P95) ms | P99: $($g.P99) ms | Maximo: $($g.Maximo) ms
-- Jitter: $($g.Jitter) ms | Picos 80-119ms: $($g.Spikes80) | Picos >=120ms: $($g.Spikes120) | Perdida: $($g.Perdida)% ($($g.PerdidosN) de $($g.Total))
+[Google ICMP ($dnsGoogle)] - $($g.Total) total samples
+- Average: $($g.Promedio) ms | Median: $($g.Mediana) ms | P95: $($g.P95) ms | P99: $($g.P99) ms | Max: $($g.Maximo) ms
+- Jitter: $($g.Jitter) ms | Spikes 80-119ms: $($g.Spikes80) | Spikes >=120ms: $($g.Spikes120) | Loss: $($g.Perdida)% ($($g.PerdidosN) of $($g.Total))
 
-[Google TCP:$puertoTcp (conexion real)] - $($gTcp.Total) intentos totales
-- Promedio: $($gTcp.Promedio) ms | Mediana: $($gTcp.Mediana) ms | P95: $($gTcp.P95) ms | P99: $($gTcp.P99) ms | Maximo: $($gTcp.Maximo) ms
-- Jitter: $($gTcp.Jitter) ms | Picos 80-119ms: $($gTcp.Spikes80) | Picos >=120ms: $($gTcp.Spikes120) | Fallidas: $($gTcp.Perdida)% ($($gTcp.PerdidosN) de $($gTcp.Total))
-=======================================================================
+[Google TCP:$puertoTcp (real connection)] - $($gTcp.Total) total attempts
+- Average: $($gTcp.Promedio) ms | Median: $($gTcp.Mediana) ms | P95: $($gTcp.P95) ms | P99: $($gTcp.P99) ms | Max: $($gTcp.Maximo) ms
+- Jitter: $($gTcp.Jitter) ms | Spikes 80-119ms: $($gTcp.Spikes80) | Spikes >=120ms: $($gTcp.Spikes120) | Failed: $($gTcp.Perdida)% ($($gTcp.PerdidosN) of $($gTcp.Total))
 "@
+
+    if ($lolI -ne $null) {
+        $reporte += @"
+
+[LoL server ICMP ($lolIP)] - $($lolI.Total) total samples (approximate target, see note below)
+- Average: $($lolI.Promedio) ms | Median: $($lolI.Mediana) ms | P95: $($lolI.P95) ms | P99: $($lolI.P99) ms | Max: $($lolI.Maximo) ms
+- Jitter: $($lolI.Jitter) ms | Spikes 80-119ms: $($lolI.Spikes80) | Spikes >=120ms: $($lolI.Spikes120) | Loss: $($lolI.Perdida)% ($($lolI.PerdidosN) of $($lolI.Total))
+
+[LoL server TCP:$lolPort (real connection)] - $($lolT.Total) total attempts
+- Average: $($lolT.Promedio) ms | Median: $($lolT.Mediana) ms | P95: $($lolT.P95) ms | P99: $($lolT.P99) ms | Max: $($lolT.Maximo) ms
+- Jitter: $($lolT.Jitter) ms | Spikes 80-119ms: $($lolT.Spikes80) | Spikes >=120ms: $($lolT.Spikes120) | Failed: $($lolT.Perdida)% ($($lolT.PerdidosN) of $($lolT.Total))
+"@
+    }
 
     $reporte += "`r`n=======================================================================`r`n"
     $reporte += "                   $tituloDiag`r`n"
@@ -583,13 +669,14 @@ $lineaBaseline
     $reporte += "-> $($dx.Titulo)`r`n"
     $reporte += "   $($dx.Explicacion)`r`n"
     foreach ($m in $dx.Motivos) { $reporte += "   - $m`r`n" }
-    if ($dx.Recomendacion -ne '') { $reporte += "   RECOMENDACION: $($dx.Recomendacion)`r`n" }
-    if ($r.Total -lt 30) { $reporte += "   (Hay pocas muestras: deja correr mas tiempo antes de confiar en este resultado.)`r`n" }
-    if ($i -ne $null) { $reporte += "   NOTA ISP: el 'primer salto ISP' es un equipo intermedio; muchos routers responden al ping con menor prioridad que al trafico que solo atraviesan, asi que sus numeros pueden estar inflados. Se usa solo como pista adicional.`r`n" }
-    $reporte += "   NOTA TCP: las lineas 'TCP:$puertoTcp' miden el tiempo real de conexion (protocolo TCP), no ICMP. Se parecen mas al trafico real de una app o juego que el ping clasico, que algunos equipos intermedios tratan distinto.`r`n"
+    if ($dx.Recomendacion -ne '') { $reporte += "   RECOMMENDATION: $($dx.Recomendacion)`r`n" }
+    if ($r.Total -lt 30) { $reporte += "   (Few samples so far: let it run longer before trusting this result.)`r`n" }
+    if ($i -ne $null) { $reporte += "   ISP NOTE: the 'ISP first hop' is an intermediate device; many routers reply to ping with lower priority than the traffic they just forward, so its numbers can look inflated. Used only as an extra clue.`r`n" }
+    $reporte += "   TCP NOTE: the 'TCP:$puertoTcp' lines measure real connection time (TCP protocol), not ICMP. They are closer to the real traffic of an app or game than a classic ping, which some intermediate devices treat differently.`r`n"
+    if ($lolIP -ne $null) { $reporte += "   LOL NOTE: the LoL server IP was detected from an active TCP connection made by the League client (League of Legends match traffic itself runs over UDP, which cannot be inspected this way without admin rights). It is an approximation of the route to Riot's infrastructure, not guaranteed to be the exact same server used in a given match.`r`n" }
 
     if ($eventos.Count -gt 0) {
-        $reporte += "`r`nULTIMOS EVENTOS (picos de 120 ms o mas / paquetes perdidos, ICMP):`r`n"
+        $reporte += "`r`nLATEST EVENTS (spikes of 120 ms or more / packet loss, ICMP):`r`n"
         foreach ($e in $eventos) { $reporte += "  $e`r`n" }
     }
 
@@ -598,7 +685,7 @@ $lineaBaseline
 }
 
 # ======================================================================
-#  Panel en vivo: se redibuja siempre desde la fila 0 sin borrar la pantalla
+#  Live panel: always redraws from row 0 without clearing the screen
 # ======================================================================
 function Dibujar-Panel {
     $w = [Console]::WindowWidth
@@ -616,27 +703,37 @@ function Dibujar-Panel {
     $g = Resumen-Stats $statG
     $cTcp = Resumen-Stats $statCTcp
     $gTcp = Resumen-Stats $statGTcp
-    $dx = Evaluar-Diagnostico $r $i $c $g $cTcp $gTcp $conexion
+    $lolI = $null
+    $lolT = $null
+    if ($statLolIcmp -ne $null) {
+        $lolI = Resumen-Stats $statLolIcmp
+        $lolT = Resumen-Stats $statLolTcp
+    }
+    $dx = Evaluar-Diagnostico $r $i $c $g $cTcp $gTcp $lolI $lolT $conexion
 
     $largoSep = [math]::Min(78, $w - 1)
     $sep = '=' * $largoSep
     $transcurrido = Formato-Duracion $inicioSesion
 
-    $lineaConexion = " Conexion: $($conexion.Tipo)"
-    if ($conexion.Detalle -ne '') { $lineaConexion += " ($($conexion.Detalle)" + $(if ($conexion.Senal -ne $null) { ", Senal: $($conexion.Senal)%)" } else { ")" }) }
+    $lineaConexion = " Connection: $($conexion.Tipo)"
+    if ($conexion.Detalle -ne '') { $lineaConexion += " ($($conexion.Detalle)" + $(if ($conexion.Senal -ne $null) { ", Signal: $($conexion.Senal)%)" } else { ")" }) }
+
+    $lolEstado = 'not detected yet'
+    if ($lolIP -ne $null) { $lolEstado = "$lolIP`:$lolPort" }
 
     $lineas = New-Object System.Collections.ArrayList
     [void]$lineas.Add(@{ T = $sep; C = 'Cyan' })
-    [void]$lineas.Add(@{ T = '  DIAGNOSTICO DE LATENCIA Y JITTER EN VIVO (GAMING)'; C = 'Cyan' })
+    [void]$lineas.Add(@{ T = '  LIVE LATENCY AND JITTER DIAGNOSTICS (GAMING)'; C = 'Cyan' })
     [void]$lineas.Add(@{ T = $sep; C = 'Cyan' })
-    [void]$lineas.Add(@{ T = " Router/Modem: $routerIP | ISP: $(if ($ispIP -ne $null) { $ispIP } else { 'no detectado' }) | Cloudflare: $dnsCloudflare | Google: $dnsGoogle"; C = 'Gray' })
+    [void]$lineas.Add(@{ T = " Router/Modem: $routerIP | ISP: $(if ($ispIP -ne $null) { $ispIP } else { 'not detected' }) | Cloudflare: $dnsCloudflare | Google: $dnsGoogle"; C = 'Gray' })
+    [void]$lineas.Add(@{ T = " LoL server: $lolEstado"; C = 'Gray' })
     [void]$lineas.Add(@{ T = $lineaConexion; C = 'Gray' })
-    [void]$lineas.Add(@{ T = " Duracion: $transcurrido | Registro cada $($U_SegundosRegistroPeriodico)s | Baseline: $(if ($baseline -ne $null) { 'lista' } else { "en $([math]::Max(0, $U_MuestrasBaseline - $r.Total))" })"; C = 'Gray' })
-    [void]$lineas.Add(@{ T = " [S] Reporte y pausa  [C] Continuar  [Q] o Ctrl+C: Finalizar y ver diagnostico"; C = 'Cyan' })
+    [void]$lineas.Add(@{ T = " Duration: $transcurrido | Log entry every $($U_SegundosRegistroPeriodico)s | Baseline: $(if ($baseline -ne $null) { 'ready' } else { "in $([math]::Max(0, $U_MuestrasBaseline - $r.Total))" })"; C = 'Gray' })
+    [void]$lineas.Add(@{ T = " [S] Report and pause  [C] Continue  [Q] or Ctrl+C: Finish and view diagnosis"; C = 'Cyan' })
     [void]$lineas.Add(@{ T = $sep; C = 'Cyan' })
 
     $fmt = '{0,-16}{1,7}{2,6}{3,5}{4,5}{5,5}{6,6}{7,6}{8,7}{9,6}{10,7}'
-    $enc = $fmt -f 'OBJETIVO', 'MUEST', 'PROM', 'MED', 'P95', 'P99', 'MAX', 'JIT', '80-119', '>=120', 'PERD'
+    $enc = $fmt -f 'TARGET', 'SAMP', 'AVG', 'MED', 'P95', 'P99', 'MAX', 'JIT', '80-119', '>=120', 'LOSS'
     $filaR = $fmt -f 'Router/Modem', $r.Total, $r.Promedio, $r.Mediana, $r.P95, $r.P99, $r.Maximo, $r.Jitter, $r.Spikes80, $r.Spikes120, "$($r.Perdida)%"
     $filaC = $fmt -f 'Cloudflare-ICMP', $c.Total, $c.Promedio, $c.Mediana, $c.P95, $c.P99, $c.Maximo, $c.Jitter, $c.Spikes80, $c.Spikes120, "$($c.Perdida)%"
     $filaCTcp = $fmt -f 'Cloudflare-TCP', $cTcp.Total, $cTcp.Promedio, $cTcp.Mediana, $cTcp.P95, $cTcp.P99, $cTcp.Maximo, $cTcp.Jitter, $cTcp.Spikes80, $cTcp.Spikes120, "$($cTcp.Perdida)%"
@@ -645,18 +742,24 @@ function Dibujar-Panel {
     [void]$lineas.Add(@{ T = $enc; C = 'Cyan' })
     [void]$lineas.Add(@{ T = $filaR; C = 'White' })
     if ($i -ne $null) {
-        $filaI = $fmt -f 'ISP (1er salto)', $i.Total, $i.Promedio, $i.Mediana, $i.P95, $i.P99, $i.Maximo, $i.Jitter, $i.Spikes80, $i.Spikes120, "$($i.Perdida)%"
+        $filaI = $fmt -f 'ISP (1st hop)', $i.Total, $i.Promedio, $i.Mediana, $i.P95, $i.P99, $i.Maximo, $i.Jitter, $i.Spikes80, $i.Spikes120, "$($i.Perdida)%"
         [void]$lineas.Add(@{ T = $filaI; C = 'DarkGray' })
     }
     [void]$lineas.Add(@{ T = $filaC; C = 'White' })
     [void]$lineas.Add(@{ T = $filaCTcp; C = 'DarkGray' })
     [void]$lineas.Add(@{ T = $filaG; C = 'White' })
     [void]$lineas.Add(@{ T = $filaGTcp; C = 'DarkGray' })
+    if ($lolI -ne $null) {
+        $filaLolI = $fmt -f 'LoL-ICMP', $lolI.Total, $lolI.Promedio, $lolI.Mediana, $lolI.P95, $lolI.P99, $lolI.Maximo, $lolI.Jitter, $lolI.Spikes80, $lolI.Spikes120, "$($lolI.Perdida)%"
+        $filaLolT = $fmt -f 'LoL-TCP', $lolT.Total, $lolT.Promedio, $lolT.Mediana, $lolT.P95, $lolT.P99, $lolT.Maximo, $lolT.Jitter, $lolT.Spikes80, $lolT.Spikes120, "$($lolT.Perdida)%"
+        [void]$lineas.Add(@{ T = $filaLolI; C = 'White' })
+        [void]$lineas.Add(@{ T = $filaLolT; C = 'DarkGray' })
+    }
 
     $colorEstado = 'Green'
     if ($dx.Nivel -eq 'ATENCION') { $colorEstado = 'Yellow' }
     if ($dx.Nivel -eq 'PROBLEMA') { $colorEstado = 'Red' }
-    [void]$lineas.Add(@{ T = " ESTADO: $($dx.Titulo)"; C = $colorEstado })
+    [void]$lineas.Add(@{ T = " STATUS: $($dx.Titulo)"; C = $colorEstado })
     for ($k = 0; $k -lt 3; $k++) {
         $motivo = ''
         if ($k -lt $dx.Motivos.Count) { $motivo = "   - " + $dx.Motivos[$k] }
@@ -664,7 +767,7 @@ function Dibujar-Panel {
     }
 
     [void]$lineas.Add(@{ T = $sep; C = 'Cyan' })
-    [void]$lineas.Add(@{ T = ' ULTIMAS MEDICIONES ICMP (el historial completo esta en el log)'; C = 'Cyan' })
+    [void]$lineas.Add(@{ T = ' LATEST ICMP MEASUREMENTS (the full history is in the log)'; C = 'Cyan' })
 
     $libres = $h - 1 - $lineas.Count
     if ($libres -lt 1) { $libres = 1 }
@@ -689,20 +792,20 @@ function Dibujar-Panel {
     [Console]::SetCursorPosition(0, $h - 1)
 }
 
-# --- Detecta si una tecla leida es Ctrl+C ---
+# --- Detects whether a read key is Ctrl+C ---
 function Es-CtrlC ($key) {
     return (($key.Modifiers -band [ConsoleModifiers]::Control) -and ($key.Key -eq 'C'))
 }
 
 # ======================================================================
-#  Pausa con reporte completo. Devuelve $true si el usuario eligio salir.
+#  Pause with full report. Returns $true if the user chose to quit.
 # ======================================================================
 function Modo-Snapshot {
     Clear-Host
     $txt = Construir-Reporte 'parcial'
     Write-Host $txt -ForegroundColor Yellow
     Add-Content -Path $logFile -Value $txt
-    Write-Host ">>> MONITOREO EN PAUSA. Presiona 'C' para continuar, o 'Q'/Ctrl+C para finalizar <<<" -ForegroundColor Cyan
+    Write-Host ">>> MONITORING PAUSED. Press 'C' to continue, or 'Q'/Ctrl+C to finish <<<" -ForegroundColor Cyan
     while ($true) {
         if ([Console]::KeyAvailable) {
             $k = [Console]::ReadKey($true)
@@ -718,17 +821,17 @@ function Modo-Snapshot {
 }
 
 # ======================================================================
-#  Bucle principal
+#  Main loop
 # ======================================================================
-Add-Content -Path $logFile -Value ("`r`n--- NUEVA SESION DE DIAGNOSTICO: " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + ' ---')
-Add-Content -Path $logFile -Value ("Conexion: $($conexion.Tipo) | ISP detectado: $(if ($ispIP -ne $null) { $ispIP } else { 'no' })")
+Add-Content -Path $logFile -Value ("`r`n--- NEW DIAGNOSTIC SESSION: " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + ' ---')
+Add-Content -Path $logFile -Value ("Connection: $($conexion.Tipo) | ISP detected: $(if ($ispIP -ne $null) { $ispIP } else { 'no' })")
 
 if (($conexion.Tipo -eq 'Wi-Fi') -and ($conexion.SSID -eq '') -and ($conexion.PermisoFaltante)) {
-    Add-Content -Path $logFile -Value 'NOTA: no se pudo leer SSID/senal por netsh. Windows exige el permiso de Ubicacion (Configuracion > Privacidad y seguridad > Ubicacion), y en este equipo ademas pide ejecutar el .bat como administrador. El SSID por Get-NetConnectionProfile tampoco se pudo obtener en esta sesion.'
+    Add-Content -Path $logFile -Value 'NOTE: could not read SSID/signal via netsh. Windows requires the Location permission (Settings > Privacy & security > Location), and on this machine it also requires running the .bat as administrator. The SSID via Get-NetConnectionProfile could not be obtained either in this session.'
 } elseif (($conexion.Tipo -eq 'Wi-Fi') -and ($conexion.SSID -eq '')) {
-    Add-Content -Path $logFile -Value "DEBUG - salida cruda de 'netsh wlan show interfaces' (para ajustar la deteccion del SSID):"
+    Add-Content -Path $logFile -Value "DEBUG - raw output of 'netsh wlan show interfaces' (to help tune SSID detection):"
     if ($conexion.Cruda.Count -eq 0) {
-        Add-Content -Path $logFile -Value '  (el comando no devolvio ninguna linea)'
+        Add-Content -Path $logFile -Value '  (the command returned no lines)'
     } else {
         foreach ($linea in $conexion.Cruda) { Add-Content -Path $logFile -Value "  [$($linea.Length) chars] $linea" }
     }
@@ -757,31 +860,54 @@ while (-not $salir) {
     Agregar-Muestra $statGTcp $tGoogleTcp
 
     Registrar-Evento 'Router/Modem' $tRouter
-    if ($ispIP -ne $null) { Registrar-Evento 'ISP (1er salto)' $tIsp }
+    if ($ispIP -ne $null) { Registrar-Evento 'ISP (1st hop)' $tIsp }
     Registrar-Evento 'Cloudflare' $tCloud
     Registrar-Evento 'Google' $tGoogle
+
+    # --- Try to detect the LoL client while not found yet ---
+    if (($lolIP -eq $null) -and (((Get-Date) - $ultimoIntentoLol).TotalSeconds -ge $U_SegundosReintentoLol)) {
+        $ultimoIntentoLol = Get-Date
+        $encontrado = Buscar-EndpointLoL
+        if ($encontrado -ne $null) {
+            $lolIP = $encontrado.IP
+            $lolPort = $encontrado.Port
+            $statLolIcmp = Nuevo-Stat
+            $statLolTcp = Nuevo-Stat
+            Add-Content -Path $logFile -Value "LoL server candidate detected: $lolIP`:$lolPort (from process $($encontrado.Proceso)). NOTE: League of Legends match traffic runs over UDP, which cannot be inspected without admin rights; this is a TCP connection made by the client, used as an approximation of the route to Riot's servers, not necessarily the exact same game server."
+        }
+    }
+
+    $tLolIcmp = -1
+    $tLolTcp = -1
+    if ($lolIP -ne $null) {
+        $tLolIcmp = Get-PingTime $lolIP
+        $tLolTcp = Get-TcpConnectTime $lolIP $lolPort 1000
+        Agregar-Muestra $statLolIcmp $tLolIcmp
+        Agregar-Muestra $statLolTcp $tLolTcp
+        Registrar-Evento 'LoL' $tLolIcmp
+    }
 
     if (($baseline -eq $null) -and ($statR.Total -ge $U_MuestrasBaseline)) {
         $baseline = Capturar-Baseline
     }
 
-    $sRouter = 'Perdido'
+    $sRouter = 'Lost'
     if ($tRouter -ge 0) { $sRouter = "$tRouter ms" }
-    $sCloud = 'Perdido'
+    $sCloud = 'Lost'
     if ($tCloud -ge 0) { $sCloud = "$tCloud ms" }
-    $sGoogle = 'Perdido'
+    $sGoogle = 'Lost'
     if ($tGoogle -ge 0) { $sGoogle = "$tGoogle ms" }
 
     $cuerpo = 'Router: ' + $sRouter.PadRight(8) + ' | Cloudflare: ' + $sCloud.PadRight(8) + ' | Google: ' + $sGoogle.PadRight(8)
     if ($ispIP -ne $null) {
-        $sIsp = 'Perdido'
+        $sIsp = 'Lost'
         if ($tIsp -ge 0) { $sIsp = "$tIsp ms" }
         $cuerpo = 'Router: ' + $sRouter.PadRight(8) + ' | ISP: ' + $sIsp.PadRight(8) + ' | Cloudflare: ' + $sCloud.PadRight(8) + ' | Google: ' + $sGoogle.PadRight(8)
     }
     $lineaConsola = '[' + (Get-Date -Format 'HH:mm:ss') + '] ' + $cuerpo
     $lineaLog = '[' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + '] ' + $cuerpo
 
-    # Rojo: algo perdido, router >=25 ms o Internet >=120 ms. Amarillo: router >=10 ms o Internet >=80 ms
+    # Red: something lost, router >=25ms, or Internet >=120ms. Yellow: router >=10ms or Internet >=80ms
     $colorLinea = 'Gray'
     $rojo = ($tRouter -lt 0) -or ($tCloud -lt 0) -or ($tGoogle -lt 0) -or ($tRouter -ge 25) -or ($tCloud -ge 120) -or ($tGoogle -ge 120)
     $amarillo = ($tRouter -ge 10) -or ($tCloud -ge 80) -or ($tGoogle -ge 80)
@@ -796,7 +922,7 @@ while (-not $salir) {
     }
     Add-Content -Path $logFile -Value $lineaLog
 
-    # --- Registro periodico automatico en el log (no interrumpe el panel) ---
+    # --- Automatic periodic log entry (does not interrupt the live panel) ---
     if (((Get-Date) - $ultimoRegistroPeriodico).TotalSeconds -ge $U_SegundosRegistroPeriodico) {
         $txtPeriodico = Construir-Reporte 'periodico'
         Add-Content -Path $logFile -Value $txtPeriodico
@@ -805,7 +931,7 @@ while (-not $salir) {
 
     Dibujar-Panel
 
-    # Espera de 1 segundo revisando teclas cada 100 ms
+    # 1-second wait, checking for a keypress every 100 ms
     for ($k = 0; $k -lt 10; $k++) {
         if ([Console]::KeyAvailable) {
             $key = [Console]::ReadKey($true)
@@ -822,11 +948,11 @@ while (-not $salir) {
     }
 }
 
-# --- Resumen final ---
+# --- Final summary ---
 [Console]::TreatControlCAsInput = $false
 [Console]::CursorVisible = $true
 Clear-Host
 $final = Construir-Reporte 'final'
 Write-Host $final -ForegroundColor Yellow
 Add-Content -Path $logFile -Value $final
-Write-Host "Registro guardado en: $logFile" -ForegroundColor Cyan
+Write-Host "Log saved to: $logFile" -ForegroundColor Cyan
