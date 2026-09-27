@@ -1,4 +1,4 @@
-<img width="1220" height="739" alt="{3BC6774B-EE27-411E-8069-BF0D076C1BDC}" src="https://github.com/user-attachments/assets/4abefe20-1e72-4665-b8a3-d586793ec8db" />Script cmd (Windows 11 tested) que utiliza Powershell para intentar medir y entender donde se producen los retrasos, microcortes y diagnosticar el estado general de la red. Genera un log en la ubicación de ejecución.
+Script cmd (Windows 11 tested) que utiliza Powershell para intentar medir y entender donde se producen los retrasos, microcortes y diagnosticar el estado general de la red. Genera un log en la ubicación de ejecución.
 
 Apuntado al LoL
 
