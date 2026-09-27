@@ -42,6 +42,12 @@ $U_BaselineMinDeltaProm    = 5    # ...y ademas superarla por al menos esto (ms)
 $U_BaselineFactorJitter    = 3
 $U_BaselineMinDeltaJitter  = 5
 
+# --- Deteccion de patrones periodicos en los eventos (picos/perdidas) ---
+$U_MinEventosPeriodicidad  = 4    # minimo de eventos para intentar detectar un patron
+$U_MinEventosConfianza     = 6    # a partir de aca se reporta con mas confianza
+$U_MinSegundosPeriodo      = 10   # eventos mas seguidos que esto no se tratan como "periodicos"
+$U_MaxCoefVariacion        = 0.25 # que tan parejos deben ser los intervalos (0 = identicos)
+
 # --- El log se guarda junto a este .bat ---
 $baseDir = $env:SCRIPT_DIR
 if ([string]::IsNullOrEmpty($baseDir)) { $baseDir = (Get-Location).Path }
@@ -293,8 +299,39 @@ function Hay-Picos ($x) {
 }
 
 # ======================================================================
+#  Deteccion de patrones periodicos: mira los intervalos entre eventos
+#  (picos >=120ms o perdidas) de un mismo objetivo. Si los intervalos son
+#  parejos entre si (coeficiente de variacion bajo), es mas probable que
+#  sea una tarea que se repite (DFS de Wi-Fi, sincronizacion, backup) que
+#  ruido al azar. Lee $eventosTiempos directamente (definida mas abajo).
+# ======================================================================
+function Detectar-Periodicidad ($nombre) {
+    if (-not $eventosTiempos.ContainsKey($nombre)) { return $null }
+    $tiempos = $eventosTiempos[$nombre]
+    if ($tiempos.Count -lt $U_MinEventosPeriodicidad) { return $null }
+
+    $intervalos = @()
+    for ($idx = 1; $idx -lt $tiempos.Count; $idx++) {
+        $intervalos += ($tiempos[$idx] - $tiempos[$idx - 1]).TotalSeconds
+    }
+
+    $prom = ($intervalos | Measure-Object -Average).Average
+    if ($prom -lt $U_MinSegundosPeriodo) { return $null }
+
+    $sumaCuad = 0
+    foreach ($iv in $intervalos) { $sumaCuad += [math]::Pow($iv - $prom, 2) }
+    $desvio = [math]::Sqrt($sumaCuad / $intervalos.Count)
+
+    $cv = 0
+    if ($prom -gt 0) { $cv = $desvio / $prom }
+    if ($cv -gt $U_MaxCoefVariacion) { return $null }
+
+    return @{ Promedio = [math]::Round($prom, 0); Desvio = [math]::Round($desvio, 0); Cantidad = $tiempos.Count }
+}
+
+# ======================================================================
 #  Diagnostico: OK / ATENCION / PROBLEMA (local, ISP o internet general)
-#  Lee $baseline directamente (linea base capturada en el bucle principal).
+#  Lee $baseline y $eventosTiempos directamente (session-state, mas abajo).
 # ======================================================================
 function Evaluar-Diagnostico ($r, $i, $c, $g, $cTcp, $gTcp, $conexion) {
     $probLocal = @()
@@ -318,9 +355,6 @@ function Evaluar-Diagnostico ($r, $i, $c, $g, $cTcp, $gTcp, $conexion) {
     }
 
     # --- Internet: ICMP (ping) + TCP real (puerto 443) por separado ---
-    # El juego usa UDP, no ICMP, y muchos routers intermedios priorizan el
-    # ICMP distinto al trafico real. Por eso se compara: si solo falla el
-    # ICMP, puede ser ruido; si tambien falla el TCP real, pesa mas.
     $objetivosIcmp = @{ 'Cloudflare' = $c; 'Google' = $g }
     $objetivosTcp  = @{ 'Cloudflare' = $cTcp; 'Google' = $gTcp }
     foreach ($nom in @('Cloudflare', 'Google')) {
@@ -378,6 +412,16 @@ function Evaluar-Diagnostico ($r, $i, $c, $g, $cTcp, $gTcp, $conexion) {
         }
     }
 
+    # --- Patrones periodicos en los eventos de cada objetivo ---
+    foreach ($nombreObjetivo in @('Router/Modem', 'ISP (1er salto)', 'Cloudflare', 'Google')) {
+        $patron = Detectar-Periodicidad $nombreObjetivo
+        if ($patron -ne $null) {
+            $confianza = ''
+            if ($patron.Cantidad -lt $U_MinEventosConfianza) { $confianza = ' (pocos eventos todavia, tomalo como indicio)' }
+            $avisos += "${nombreObjetivo}: patron periodico detectado -- eventos cada ~$($patron.Promedio)s (+/- $($patron.Desvio)s, sobre $($patron.Cantidad) eventos)$confianza. Tipico de tareas programadas, sincronizaciones, o en Wi-Fi 5GHz de un barrido DFS del router; revisa el Programador de tareas de Windows y, si es Wi-Fi, probar fijar un canal 5GHz no-DFS (36/40/44/48 o 149+)"
+        }
+    }
+
     $res = @{}
     if ($probLocal.Count -gt 0) {
         $res.Nivel = 'PROBLEMA'
@@ -431,6 +475,7 @@ function Capturar-Baseline {
 }
 
 $eventos = New-Object System.Collections.ArrayList
+$eventosTiempos = @{}
 $colaTxt = New-Object System.Collections.ArrayList
 $colaCol = New-Object System.Collections.ArrayList
 $inicioSesion = Get-Date
@@ -439,10 +484,18 @@ $anchoPrevio = 0
 $altoPrevio = 0
 
 function Registrar-Evento ($nombre, $t) {
-    $marca = Get-Date -Format 'HH:mm:ss'
-    if ($t -lt 0) { [void]$eventos.Add("[$marca] ${nombre}: paquete perdido") }
-    elseif ($t -ge 120) { [void]$eventos.Add("[$marca] ${nombre}: $t ms") }
+    $marca = Get-Date
+    $marcaTxt = $marca.ToString('HH:mm:ss')
+    $esAnomalia = $false
+    if ($t -lt 0) { [void]$eventos.Add("[$marcaTxt] ${nombre}: paquete perdido"); $esAnomalia = $true }
+    elseif ($t -ge 120) { [void]$eventos.Add("[$marcaTxt] ${nombre}: $t ms"); $esAnomalia = $true }
     if ($eventos.Count -gt 30) { $eventos.RemoveAt(0) }
+
+    if ($esAnomalia) {
+        if (-not $eventosTiempos.ContainsKey($nombre)) { $eventosTiempos[$nombre] = New-Object System.Collections.ArrayList }
+        [void]$eventosTiempos[$nombre].Add($marca)
+        if ($eventosTiempos[$nombre].Count -gt 200) { $eventosTiempos[$nombre].RemoveAt(0) }
+    }
 }
 
 # ======================================================================
