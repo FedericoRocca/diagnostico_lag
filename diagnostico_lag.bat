@@ -8,7 +8,7 @@ exit /b
 #>
 
 # ======================================================================
-#  LIVE LAG DIAGNOSTICS - Local network / ISP / Internet / LoL server
+#  LIVE LAG DIAGNOSTICS - Local network / ISP / Internet / game servers
 #  Fixed live panel on top (refreshes every second) + latest samples below.
 #  Every 1 minute a full periodic snapshot is saved to the log.
 #  Keys: S = full report and pause, C = continue, Q = finish
@@ -48,8 +48,8 @@ $U_MinEventosConfianza     = 6    # from this many events on, report with more c
 $U_MinSegundosPeriodo      = 10   # events closer together than this aren't treated as "periodic"
 $U_MaxCoefVariacion        = 0.25 # how even the intervals must be (0 = identical)
 
-# --- Automatic LoL server detection (best effort, no admin required) ---
-$U_SegundosReintentoLol = 15  # how often to retry detecting the LoL client while not found yet
+# --- Automatic game server detection (best effort, no admin required) ---
+$U_SegundosReintentoJuego = 15  # how often to retry detecting each game's client while not found yet
 
 # --- The log is saved next to this .bat ---
 $baseDir = $env:SCRIPT_DIR
@@ -226,16 +226,19 @@ function Obtener-InfoConexion {
 $conexion = Obtener-InfoConexion
 
 # ======================================================================
-#  Automatic LoL server detection (best effort, no admin required).
-#  League of Legends match traffic runs over UDP, which the OS does not
-#  expose a remote peer for via built-in tools without admin rights.
-#  As a workaround, this looks at the TCP connections the League client
-#  process currently has established and uses the first public IP found
-#  as an approximation of the route to Riot's infrastructure. It is NOT
-#  guaranteed to be the exact game server for the current match.
+#  Automatic game server detection (best effort, no admin required).
+#  Most game engines send match traffic over UDP, which the OS does not
+#  expose a remote peer for via built-in tools without admin rights. As a
+#  workaround, this looks at the TCP connections the game's process
+#  currently has established and uses the most recent public IP found as
+#  an approximation of the route to that game's infrastructure. It is
+#  NOT guaranteed to be the exact game/match server.
+#
+#  To add another game, add an entry to $juegos below with its process
+#  name(s) (as shown in Task Manager, without ".exe") and a short note
+#  about the caveats for that specific game.
 # ======================================================================
-function Buscar-ProcesoLoL {
-    $nombres = @('League of Legends', 'LeagueClientUx', 'LeagueClient')
+function Buscar-Proceso ($nombres) {
     foreach ($n in $nombres) {
         $p = Get-Process -Name $n -ErrorAction SilentlyContinue
         if ($p) { return $p }
@@ -243,28 +246,44 @@ function Buscar-ProcesoLoL {
     return $null
 }
 
-function Buscar-EndpointLoL {
-    $procesos = Buscar-ProcesoLoL
-    if (-not $procesos) { return $null }
+function Buscar-EndpointConDiagnostico ($nombresProcesos) {
+    $procesos = Buscar-Proceso $nombresProcesos
+    if (-not $procesos) {
+        return @{ Encontrado = $null; Razon = "process not found (looking for: $($nombresProcesos -join ', '))" }
+    }
     $procIds = $procesos | Select-Object -ExpandProperty Id
     $procNombre = ($procesos | Select-Object -First 1).ProcessName
-    $conexiones = Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
-        Where-Object { $procIds -contains $_.OwningProcess } |
-        Sort-Object -Property CreationTime -Descending
-    foreach ($c in $conexiones) {
+    $conexiones = @(Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue | Where-Object { $procIds -contains $_.OwningProcess })
+    if ($conexiones.Count -eq 0) {
+        return @{ Encontrado = $null; Razon = "process '$procNombre' (PID $($procIds -join ',')) is running but has 0 established TCP connections right now -- it may be using only UDP (e.g. Steam Datagram Relay), in which case this method cannot find an IP for it" }
+    }
+    foreach ($c in ($conexiones | Sort-Object -Property CreationTime -Descending)) {
         $ip = $c.RemoteAddress
         if ([string]::IsNullOrEmpty($ip)) { continue }
         if ($ip -match '^(10\.|127\.|169\.254\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|::1|fe80|0\.0\.0\.0)') { continue }
-        return @{ IP = $ip; Port = $c.RemotePort; Proceso = $procNombre }
+        return @{ Encontrado = @{ IP = $ip; Port = $c.RemotePort; Proceso = $procNombre }; Razon = $null }
     }
-    return $null
+    return @{ Encontrado = $null; Razon = "process '$procNombre' has $($conexiones.Count) established TCP connection(s), but all of them are private/local addresses" }
 }
 
-$lolIP = $null
-$lolPort = $null
-$statLolIcmp = $null
-$statLolTcp = $null
-$ultimoIntentoLol = (Get-Date).AddSeconds(-$U_SegundosReintentoLol)
+$juegos = @(
+    @{
+        Etiqueta = 'LoL'
+        Procesos = @('League of Legends', 'LeagueClientUx', 'LeagueClient')
+        Nota = "League of Legends match traffic runs over UDP, which cannot be inspected without admin rights; this is a TCP connection made by the client, used as an approximation of the route to Riot's servers, not necessarily the exact same game server."
+        IP = $null; Port = $null; StatIcmp = $null; StatTcp = $null
+        UltimoIntento = (Get-Date).AddSeconds(-$U_SegundosReintentoJuego)
+        UltimaRazon = $null
+    },
+    @{
+        Etiqueta = 'CSS'
+        Procesos = @('cstrike_win64', 'cstrike', 'hl2')
+        Nota = "Detected via the 'cstrike_win64'/'cstrike' process (modern CS:S builds use their own executable, not the shared 'hl2.exe'). If your install still uses 'hl2.exe' instead, it is shared by every Source-engine game (TF2, Garry's Mod, classic HL2, etc.), so with more than one open at once this can lock onto the wrong one. Source engine match traffic also runs mostly over UDP, so this TCP connection is only an approximation of the route, not the exact match server."
+        IP = $null; Port = $null; StatIcmp = $null; StatTcp = $null
+        UltimoIntento = (Get-Date).AddSeconds(-$U_SegundosReintentoJuego)
+        UltimaRazon = $null
+    }
+)
 
 # ======================================================================
 #  Incremental statistics (samples aren't stored individually: counters
@@ -374,10 +393,11 @@ function Detectar-Periodicidad ($nombre) {
 }
 
 # ======================================================================
-#  Diagnosis: OK / ATTENTION / PROBLEM (local, ISP, internet, or LoL)
-#  Reads $baseline and $eventosTiempos directly (session state, below).
+#  Diagnosis: OK / ATTENTION / PROBLEM (local, ISP, internet, or a game)
+#  Reads $baseline, $eventosTiempos and $juegos directly (session state,
+#  defined further below).
 # ======================================================================
-function Evaluar-Diagnostico ($r, $i, $c, $g, $cTcp, $gTcp, $lolI, $lolT, $conexion) {
+function Evaluar-Diagnostico ($r, $i, $c, $g, $cTcp, $gTcp, $conexion) {
     $probLocal = @()
     $probIsp = @()
     $avisos = @()
@@ -422,22 +442,27 @@ function Evaluar-Diagnostico ($r, $i, $c, $g, $cTcp, $gTcp, $lolI, $lolT, $conex
         if ($xt.Maximo -ge 250) { $avisos += "${nom} (TCP): connection took up to $($xt.Maximo) ms (over $($xt.Total) total attempts)" }
     }
 
-    # --- LoL server (if detected during the session) ---
-    if ($lolI -ne $null) {
-        $probIcmpLol = ($lolI.Perdida -gt 3) -or ($lolI.Promedio -gt 100) -or ($lolI.Jitter -gt 15) -or (Hay-Picos $lolI)
-        $probTcpLol  = ($lolT.Perdida -gt 3) -or ($lolT.Promedio -gt $U_TcpPromedioProblema) -or ($lolT.Jitter -gt $U_TcpJitterProblema) -or (Hay-Picos $lolT)
+    # --- Detected game servers ---
+    foreach ($j in $juegos) {
+        if ($j.StatIcmp -eq $null) { continue }
+        $jI = Resumen-Stats $j.StatIcmp
+        $jT = Resumen-Stats $j.StatTcp
+        $etiquetaJ = "$($j.Etiqueta) server ($($j.IP))"
 
-        if ($probIcmpLol -and $probTcpLol) {
-            $probIsp += "LoL server ($lolIP): problem confirmed by both ICMP and real TCP (TCP: jitter $($lolT.Jitter) ms, $(Formato-Conteo $lolT.Spikes120 $lolT.Total) spikes >=120ms, loss $($lolT.Perdida)%)"
+        $probIcmpJ = ($jI.Perdida -gt 3) -or ($jI.Promedio -gt 100) -or ($jI.Jitter -gt 15) -or (Hay-Picos $jI)
+        $probTcpJ  = ($jT.Perdida -gt 3) -or ($jT.Promedio -gt $U_TcpPromedioProblema) -or ($jT.Jitter -gt $U_TcpJitterProblema) -or (Hay-Picos $jT)
+
+        if ($probIcmpJ -and $probTcpJ) {
+            $probIsp += "${etiquetaJ}: problem confirmed by both ICMP and real TCP (TCP: jitter $($jT.Jitter) ms, $(Formato-Conteo $jT.Spikes120 $jT.Total) spikes >=120ms, loss $($jT.Perdida)%)"
         }
-        elseif ($probTcpLol -and (-not $probIcmpLol)) {
-            $probIsp += "LoL server ($lolIP): the real TCP connection has problems even though ICMP looks clean (TCP: jitter $($lolT.Jitter) ms, $(Formato-Conteo $lolT.Spikes120 $lolT.Total) spikes >=120ms)"
+        elseif ($probTcpJ -and (-not $probIcmpJ)) {
+            $probIsp += "${etiquetaJ}: the real TCP connection has problems even though ICMP looks clean (TCP: jitter $($jT.Jitter) ms, $(Formato-Conteo $jT.Spikes120 $jT.Total) spikes >=120ms)"
         }
-        elseif ($probIcmpLol -and (-not $probTcpLol)) {
-            if ($lolI.Perdida -ge 100) {
-                $avisos += "LoL server ($lolIP): does not answer ICMP at all (100% loss) -- common for game servers that block ping. The TCP line for this target is the more reliable signal."
+        elseif ($probIcmpJ -and (-not $probTcpJ)) {
+            if ($jI.Perdida -ge 100) {
+                $avisos += "${etiquetaJ}: does not answer ICMP at all (100% loss) -- common for game servers that block ping. The TCP line for this target is the more reliable signal."
             } else {
-                $avisos += "LoL server ($lolIP): ICMP shows anomalies but the real TCP connection is clean -- this could just be ICMP being deprioritized"
+                $avisos += "${etiquetaJ}: ICMP shows anomalies but the real TCP connection is clean -- this could just be ICMP being deprioritized"
             }
         }
     }
@@ -476,8 +501,9 @@ function Evaluar-Diagnostico ($r, $i, $c, $g, $cTcp, $gTcp, $lolI, $lolT, $conex
         }
     }
 
-    # --- Periodic patterns in each target's events ---
-    foreach ($nombreObjetivo in @('Router/Modem', 'ISP (1st hop)', 'Cloudflare', 'Google', 'LoL')) {
+    # --- Periodic patterns in each target's events (fixed targets + each detected game) ---
+    $nombresObjetivos = @('Router/Modem', 'ISP (1st hop)', 'Cloudflare', 'Google') + ($juegos | ForEach-Object { $_.Etiqueta })
+    foreach ($nombreObjetivo in $nombresObjetivos) {
         $patron = Detectar-Periodicidad $nombreObjetivo
         if ($patron -ne $null) {
             $confianza = ''
@@ -576,13 +602,7 @@ function Construir-Reporte ($modo) {
     $g = Resumen-Stats $statG
     $cTcp = Resumen-Stats $statCTcp
     $gTcp = Resumen-Stats $statGTcp
-    $lolI = $null
-    $lolT = $null
-    if ($statLolIcmp -ne $null) {
-        $lolI = Resumen-Stats $statLolIcmp
-        $lolT = Resumen-Stats $statLolTcp
-    }
-    $dx = Evaluar-Diagnostico $r $i $c $g $cTcp $gTcp $lolI $lolT $conexion
+    $dx = Evaluar-Diagnostico $r $i $c $g $cTcp $gTcp $conexion
     $duracion = Formato-Duracion $inicioSesion
 
     $titulo = 'PARTIAL CONNECTION SNAPSHOT'
@@ -603,8 +623,11 @@ function Construir-Reporte ($modo) {
         $lineaBaseline = "Baseline (first $U_MuestrasBaseline samples): Router $($baseline.Router.Promedio) ms / jitter $($baseline.Router.Jitter) ms | Cloudflare $($baseline.Cloud.Promedio) ms | Google $($baseline.Google.Promedio) ms"
     }
 
-    $lineaLol = 'LoL server: not detected yet (open a match; detection is retried automatically)'
-    if ($lolIP -ne $null) { $lineaLol = "LoL server (approx.): $lolIP`:$lolPort" }
+    $lineaJuegos = ($juegos | ForEach-Object {
+        $estado = 'not detected yet'
+        if ($_.IP -ne $null) { $estado = "$($_.IP):$($_.Port)" }
+        "$($_.Etiqueta): $estado"
+    }) -join ' | '
 
     $reporte = @"
 
@@ -614,7 +637,7 @@ function Construir-Reporte ($modo) {
 Session duration: $duracion
 $lineaConexion
 $lineaBaseline
-$lineaLol
+Game servers (approx.): $lineaJuegos
 [Router/Modem ($routerIP)] - $($r.Total) total samples
 - Average: $($r.Promedio) ms | Median: $($r.Mediana) ms | P95: $($r.P95) ms | P99: $($r.P99) ms | Max: $($r.Maximo) ms
 - Jitter: $($r.Jitter) ms | Spikes 80-119ms: $($r.Spikes80) | Spikes >=120ms: $($r.Spikes120) | Loss: $($r.Perdida)% ($($r.PerdidosN) of $($r.Total))
@@ -650,16 +673,19 @@ $lineaLol
 - Jitter: $($gTcp.Jitter) ms | Spikes 80-119ms: $($gTcp.Spikes80) | Spikes >=120ms: $($gTcp.Spikes120) | Failed: $($gTcp.Perdida)% ($($gTcp.PerdidosN) of $($gTcp.Total))
 "@
 
-    if ($lolI -ne $null) {
+    foreach ($j in $juegos) {
+        if ($j.StatIcmp -eq $null) { continue }
+        $jI = Resumen-Stats $j.StatIcmp
+        $jT = Resumen-Stats $j.StatTcp
         $reporte += @"
 
-[LoL server ICMP ($lolIP)] - $($lolI.Total) total samples (approximate target, see note below)
-- Average: $($lolI.Promedio) ms | Median: $($lolI.Mediana) ms | P95: $($lolI.P95) ms | P99: $($lolI.P99) ms | Max: $($lolI.Maximo) ms
-- Jitter: $($lolI.Jitter) ms | Spikes 80-119ms: $($lolI.Spikes80) | Spikes >=120ms: $($lolI.Spikes120) | Loss: $($lolI.Perdida)% ($($lolI.PerdidosN) of $($lolI.Total))
+[$($j.Etiqueta) server ICMP ($($j.IP))] - $($jI.Total) total samples (approximate target, see note below)
+- Average: $($jI.Promedio) ms | Median: $($jI.Mediana) ms | P95: $($jI.P95) ms | P99: $($jI.P99) ms | Max: $($jI.Maximo) ms
+- Jitter: $($jI.Jitter) ms | Spikes 80-119ms: $($jI.Spikes80) | Spikes >=120ms: $($jI.Spikes120) | Loss: $($jI.Perdida)% ($($jI.PerdidosN) of $($jI.Total))
 
-[LoL server TCP:$lolPort (real connection)] - $($lolT.Total) total attempts
-- Average: $($lolT.Promedio) ms | Median: $($lolT.Mediana) ms | P95: $($lolT.P95) ms | P99: $($lolT.P99) ms | Max: $($lolT.Maximo) ms
-- Jitter: $($lolT.Jitter) ms | Spikes 80-119ms: $($lolT.Spikes80) | Spikes >=120ms: $($lolT.Spikes120) | Failed: $($lolT.Perdida)% ($($lolT.PerdidosN) of $($lolT.Total))
+[$($j.Etiqueta) server TCP:$($j.Port) (real connection)] - $($jT.Total) total attempts
+- Average: $($jT.Promedio) ms | Median: $($jT.Mediana) ms | P95: $($jT.P95) ms | P99: $($jT.P99) ms | Max: $($jT.Maximo) ms
+- Jitter: $($jT.Jitter) ms | Spikes 80-119ms: $($jT.Spikes80) | Spikes >=120ms: $($jT.Spikes120) | Failed: $($jT.Perdida)% ($($jT.PerdidosN) of $($jT.Total))
 "@
     }
 
@@ -673,7 +699,9 @@ $lineaLol
     if ($r.Total -lt 30) { $reporte += "   (Few samples so far: let it run longer before trusting this result.)`r`n" }
     if ($i -ne $null) { $reporte += "   ISP NOTE: the 'ISP first hop' is an intermediate device; many routers reply to ping with lower priority than the traffic they just forward, so its numbers can look inflated. Used only as an extra clue.`r`n" }
     $reporte += "   TCP NOTE: the 'TCP:$puertoTcp' lines measure real connection time (TCP protocol), not ICMP. They are closer to the real traffic of an app or game than a classic ping, which some intermediate devices treat differently.`r`n"
-    if ($lolIP -ne $null) { $reporte += "   LOL NOTE: the LoL server IP was detected from an active TCP connection made by the League client (League of Legends match traffic itself runs over UDP, which cannot be inspected this way without admin rights). It is an approximation of the route to Riot's infrastructure, not guaranteed to be the exact same server used in a given match.`r`n" }
+    foreach ($j in $juegos) {
+        if ($j.IP -ne $null) { $reporte += "   $($j.Etiqueta) NOTE: $($j.Nota)`r`n" }
+    }
 
     if ($eventos.Count -gt 0) {
         $reporte += "`r`nLATEST EVENTS (spikes of 120 ms or more / packet loss, ICMP):`r`n"
@@ -703,13 +731,7 @@ function Dibujar-Panel {
     $g = Resumen-Stats $statG
     $cTcp = Resumen-Stats $statCTcp
     $gTcp = Resumen-Stats $statGTcp
-    $lolI = $null
-    $lolT = $null
-    if ($statLolIcmp -ne $null) {
-        $lolI = Resumen-Stats $statLolIcmp
-        $lolT = Resumen-Stats $statLolTcp
-    }
-    $dx = Evaluar-Diagnostico $r $i $c $g $cTcp $gTcp $lolI $lolT $conexion
+    $dx = Evaluar-Diagnostico $r $i $c $g $cTcp $gTcp $conexion
 
     $largoSep = [math]::Min(78, $w - 1)
     $sep = '=' * $largoSep
@@ -718,15 +740,18 @@ function Dibujar-Panel {
     $lineaConexion = " Connection: $($conexion.Tipo)"
     if ($conexion.Detalle -ne '') { $lineaConexion += " ($($conexion.Detalle)" + $(if ($conexion.Senal -ne $null) { ", Signal: $($conexion.Senal)%)" } else { ")" }) }
 
-    $lolEstado = 'not detected yet'
-    if ($lolIP -ne $null) { $lolEstado = "$lolIP`:$lolPort" }
+    $lineaJuegos = ($juegos | ForEach-Object {
+        $estado = 'not detected yet'
+        if ($_.IP -ne $null) { $estado = "$($_.IP):$($_.Port)" }
+        "$($_.Etiqueta): $estado"
+    }) -join ' | '
 
     $lineas = New-Object System.Collections.ArrayList
     [void]$lineas.Add(@{ T = $sep; C = 'Cyan' })
     [void]$lineas.Add(@{ T = '  LIVE LATENCY AND JITTER DIAGNOSTICS (GAMING)'; C = 'Cyan' })
     [void]$lineas.Add(@{ T = $sep; C = 'Cyan' })
     [void]$lineas.Add(@{ T = " Router/Modem: $routerIP | ISP: $(if ($ispIP -ne $null) { $ispIP } else { 'not detected' }) | Cloudflare: $dnsCloudflare | Google: $dnsGoogle"; C = 'Gray' })
-    [void]$lineas.Add(@{ T = " LoL server: $lolEstado"; C = 'Gray' })
+    [void]$lineas.Add(@{ T = " Game servers -> $lineaJuegos"; C = 'Gray' })
     [void]$lineas.Add(@{ T = $lineaConexion; C = 'Gray' })
     [void]$lineas.Add(@{ T = " Duration: $transcurrido | Log entry every $($U_SegundosRegistroPeriodico)s | Baseline: $(if ($baseline -ne $null) { 'ready' } else { "in $([math]::Max(0, $U_MuestrasBaseline - $r.Total))" })"; C = 'Gray' })
     [void]$lineas.Add(@{ T = " [S] Report and pause  [C] Continue  [Q] or Ctrl+C: Finish and view diagnosis"; C = 'Cyan' })
@@ -749,11 +774,14 @@ function Dibujar-Panel {
     [void]$lineas.Add(@{ T = $filaCTcp; C = 'DarkGray' })
     [void]$lineas.Add(@{ T = $filaG; C = 'White' })
     [void]$lineas.Add(@{ T = $filaGTcp; C = 'DarkGray' })
-    if ($lolI -ne $null) {
-        $filaLolI = $fmt -f 'LoL-ICMP', $lolI.Total, $lolI.Promedio, $lolI.Mediana, $lolI.P95, $lolI.P99, $lolI.Maximo, $lolI.Jitter, $lolI.Spikes80, $lolI.Spikes120, "$($lolI.Perdida)%"
-        $filaLolT = $fmt -f 'LoL-TCP', $lolT.Total, $lolT.Promedio, $lolT.Mediana, $lolT.P95, $lolT.P99, $lolT.Maximo, $lolT.Jitter, $lolT.Spikes80, $lolT.Spikes120, "$($lolT.Perdida)%"
-        [void]$lineas.Add(@{ T = $filaLolI; C = 'White' })
-        [void]$lineas.Add(@{ T = $filaLolT; C = 'DarkGray' })
+    foreach ($j in $juegos) {
+        if ($j.StatIcmp -eq $null) { continue }
+        $jI = Resumen-Stats $j.StatIcmp
+        $jT = Resumen-Stats $j.StatTcp
+        $filaJI = $fmt -f "$($j.Etiqueta)-ICMP", $jI.Total, $jI.Promedio, $jI.Mediana, $jI.P95, $jI.P99, $jI.Maximo, $jI.Jitter, $jI.Spikes80, $jI.Spikes120, "$($jI.Perdida)%"
+        $filaJT = $fmt -f "$($j.Etiqueta)-TCP", $jT.Total, $jT.Promedio, $jT.Mediana, $jT.P95, $jT.P99, $jT.Maximo, $jT.Jitter, $jT.Spikes80, $jT.Spikes120, "$($jT.Perdida)%"
+        [void]$lineas.Add(@{ T = $filaJI; C = 'White' })
+        [void]$lineas.Add(@{ T = $filaJT; C = 'DarkGray' })
     }
 
     $colorEstado = 'Green'
@@ -864,27 +892,29 @@ while (-not $salir) {
     Registrar-Evento 'Cloudflare' $tCloud
     Registrar-Evento 'Google' $tGoogle
 
-    # --- Try to detect the LoL client while not found yet ---
-    if (($lolIP -eq $null) -and (((Get-Date) - $ultimoIntentoLol).TotalSeconds -ge $U_SegundosReintentoLol)) {
-        $ultimoIntentoLol = Get-Date
-        $encontrado = Buscar-EndpointLoL
-        if ($encontrado -ne $null) {
-            $lolIP = $encontrado.IP
-            $lolPort = $encontrado.Port
-            $statLolIcmp = Nuevo-Stat
-            $statLolTcp = Nuevo-Stat
-            Add-Content -Path $logFile -Value "LoL server candidate detected: $lolIP`:$lolPort (from process $($encontrado.Proceso)). NOTE: League of Legends match traffic runs over UDP, which cannot be inspected without admin rights; this is a TCP connection made by the client, used as an approximation of the route to Riot's servers, not necessarily the exact same game server."
+    # --- Try to detect each configured game's client while not found yet, then ping it ---
+    foreach ($j in $juegos) {
+        if (($j.IP -eq $null) -and (((Get-Date) - $j.UltimoIntento).TotalSeconds -ge $U_SegundosReintentoJuego)) {
+            $j.UltimoIntento = Get-Date
+            $resultado = Buscar-EndpointConDiagnostico $j.Procesos
+            if ($resultado.Encontrado -ne $null) {
+                $j.IP = $resultado.Encontrado.IP
+                $j.Port = $resultado.Encontrado.Port
+                $j.StatIcmp = Nuevo-Stat
+                $j.StatTcp = Nuevo-Stat
+                Add-Content -Path $logFile -Value "$($j.Etiqueta) server candidate detected: $($j.IP):$($j.Port) (from process $($resultado.Encontrado.Proceso)). $($j.Nota)"
+            } elseif ($resultado.Razon -ne $j.UltimaRazon) {
+                Add-Content -Path $logFile -Value "$($j.Etiqueta) detection: $($resultado.Razon)"
+                $j.UltimaRazon = $resultado.Razon
+            }
         }
-    }
-
-    $tLolIcmp = -1
-    $tLolTcp = -1
-    if ($lolIP -ne $null) {
-        $tLolIcmp = Get-PingTime $lolIP
-        $tLolTcp = Get-TcpConnectTime $lolIP $lolPort 1000
-        Agregar-Muestra $statLolIcmp $tLolIcmp
-        Agregar-Muestra $statLolTcp $tLolTcp
-        Registrar-Evento 'LoL' $tLolIcmp
+        if ($j.IP -ne $null) {
+            $tJIcmp = Get-PingTime $j.IP
+            $tJTcp = Get-TcpConnectTime $j.IP $j.Port 1000
+            Agregar-Muestra $j.StatIcmp $tJIcmp
+            Agregar-Muestra $j.StatTcp $tJTcp
+            Registrar-Evento $j.Etiqueta $tJIcmp
+        }
     }
 
     if (($baseline -eq $null) -and ($statR.Total -ge $U_MuestrasBaseline)) {
