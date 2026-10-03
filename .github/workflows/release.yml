@@ -1,0 +1,51 @@
+name: Build and publish release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Publish Windows x64 application
+        run: >-
+          dotnet publish DiagnosticoLag/DiagnosticoLag.csproj
+          --configuration Release
+          --runtime win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true
+          -p:DebugType=None
+          -p:DebugSymbols=false
+          --output artifacts/publish
+
+      - name: Package and create GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $executable = "artifacts/publish/DiagnosticoLag.exe"
+          if (!(Test-Path $executable)) {
+            throw "Publish did not produce $executable"
+          }
+
+          $archive = "DiagnosticoLag-$env:RELEASE_TAG-win-x64.zip"
+          Compress-Archive -Path "artifacts/publish/*" -DestinationPath $archive
+          gh release create $env:RELEASE_TAG $archive `
+            --title "Diagnóstico Lag $env:RELEASE_TAG" `
+            --generate-notes

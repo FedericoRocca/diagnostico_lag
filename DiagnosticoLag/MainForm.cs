@@ -18,23 +18,43 @@ internal sealed class MainForm : Form
     private readonly Button _resumeButton = new();
     private readonly Button _finishButton = new();
     private readonly Button _reportButton = new();
-    private readonly string _logPath = Path.Combine(
+    private readonly Button _exportReportButton = new();
+    private readonly Button _exportCsvButton = new();
+    private readonly Button _settingsButton = new();
+    private readonly string _logDirectory = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "DiagnosticoLag", "registro_latencia.txt");
+        "DiagnosticoLag", "sesiones");
     private DiagnosticSession? _session;
+    private DiagnosticSettings _settings = DiagnosticSettings.Default;
     private CancellationTokenSource? _samplingCancellation;
+    private Task? _activeSampleTask;
+    private string? _sessionLogPath;
+    private string? _sessionCsvPath;
+    private string? _lastReport;
     private bool _sampling;
     private bool _loggingAvailable = true;
+    private bool _csvAvailable = true;
     private bool _closing;
 
     public MainForm()
     {
         Text = "Diagnóstico de red para gaming";
+        Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application;
         MinimumSize = new Size(980, 680);
         Size = new Size(1220, 850);
         StartPosition = FormStartPosition.CenterScreen;
         Font = new Font("Segoe UI", 9F);
         BackColor = Color.FromArgb(245, 247, 250);
+
+        try
+        {
+            _settings = DiagnosticSettings.Load();
+        }
+        catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, $"{exception.Message}{Environment.NewLine}{Environment.NewLine}Se usarán los valores predeterminados. Podés revisarlos en Configuración.",
+                "No se pudo cargar la configuración", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
 
         BuildInterface();
         _timer.Tick += async (_, _) => await SampleOnceAsync();
@@ -97,8 +117,21 @@ internal sealed class MainForm : Form
         ConfigureButton(_resumeButton, "Continuar", Color.FromArgb(28, 121, 91));
         ConfigureButton(_finishButton, "Finalizar", Color.FromArgb(175, 59, 59));
         ConfigureButton(_reportButton, "Informe parcial", Color.FromArgb(57, 91, 145));
-        var openLogButton = new Button { Text = "Abrir registro", AutoSize = true, Height = 34, Margin = new Padding(6, 0, 0, 0) };
-        toolbar.Controls.AddRange([_startButton, _pauseButton, _resumeButton, _finishButton, _reportButton, openLogButton]);
+        _exportReportButton.Text = "Exportar informe";
+        _exportReportButton.AutoSize = true;
+        _exportReportButton.Height = 34;
+        _exportReportButton.Margin = new Padding(0, 0, 8, 0);
+        _exportCsvButton.Text = "Exportar CSV";
+        _exportCsvButton.AutoSize = true;
+        _exportCsvButton.Height = 34;
+        _exportCsvButton.Margin = new Padding(0, 0, 8, 0);
+        _settingsButton.Text = "Configuración";
+        _settingsButton.AutoSize = true;
+        _settingsButton.Height = 34;
+        _settingsButton.Margin = new Padding(0, 0, 8, 0);
+        var openLogButton = new Button { Text = "Carpeta de sesiones", AutoSize = true, Height = 34, Margin = new Padding(0, 0, 0, 0) };
+        toolbar.Controls.AddRange([_startButton, _pauseButton, _resumeButton, _finishButton, _reportButton,
+            _exportReportButton, _exportCsvButton, _settingsButton, openLogButton]);
         layout.Controls.Add(toolbar, 0, 3);
 
         var bottom = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = new Padding(0, 6, 0, 0) };
@@ -123,8 +156,11 @@ internal sealed class MainForm : Form
         _startButton.Click += async (_, _) => await StartMonitoringAsync();
         _pauseButton.Click += (_, _) => PauseMonitoring();
         _resumeButton.Click += (_, _) => ResumeMonitoring();
-        _finishButton.Click += (_, _) => FinishMonitoring();
+        _finishButton.Click += async (_, _) => await FinishMonitoringAsync();
         _reportButton.Click += (_, _) => ShowReport("parcial");
+        _exportReportButton.Click += (_, _) => ExportReport();
+        _exportCsvButton.Click += (_, _) => ExportCsv();
+        _settingsButton.Click += (_, _) => ShowSettings();
         openLogButton.Click += (_, _) => OpenLog();
     }
 
@@ -184,14 +220,21 @@ internal sealed class MainForm : Form
         _samplingCancellation = new CancellationTokenSource();
         try
         {
-            _session = await DiagnosticSession.CreateAsync(_samplingCancellation.Token);
+            _session = await DiagnosticSession.CreateAsync(_settings, _samplingCancellation.Token);
+            Directory.CreateDirectory(_logDirectory);
+            var sessionName = $"sesion_{_session.StartedAt:yyyyMMdd_HHmmss_fff}";
+            _sessionLogPath = Path.Combine(_logDirectory, $"{sessionName}.txt");
+            _sessionCsvPath = Path.Combine(_logDirectory, $"{sessionName}.csv");
+            _timer.Interval = _settings.SampleIntervalSeconds * 1000;
             _grid.Rows.Clear();
             _chart.StartSession(_session.StartedAt);
             _details.Clear();
             AppendLog($"--- NUEVA SESIÓN: {DateTime.Now:yyyy-MM-dd HH:mm:ss} ---{Environment.NewLine}" +
                       $"Conexión: {_session.Connection.Type} ({_session.Connection.Detail}) | Router: {_session.RouterAddress} | " +
                       $"Primer salto ISP: {_session.IspAddress ?? "no detectado"}{Environment.NewLine}" +
-                      $"Registro: {_logPath}{Environment.NewLine}");
+                      $"Registro: {_sessionLogPath}{Environment.NewLine}" +
+                      $"Datos CSV: {_sessionCsvPath}{Environment.NewLine}");
+            AppendCsv("hora_local,destino,protocolo,direccion,puerto,latencia_ms,resultado");
             _status.Text = $"Router {_session.RouterAddress} | ISP {_session.IspAddress ?? "no detectado"}";
             SetMonitoringControls(true, false);
             await SampleOnceAsync();
@@ -202,44 +245,80 @@ internal sealed class MainForm : Form
         }
         catch (OperationCanceledException)
         {
+            _samplingCancellation?.Dispose();
+            _samplingCancellation = null;
+            _session = null;
             _status.Text = "Inicio cancelado";
             SetMonitoringControls(false, false);
         }
         catch (Exception exception)
         {
-            _samplingCancellation.Dispose();
+            _samplingCancellation?.Dispose();
             _samplingCancellation = null;
+            _session = null;
             _status.Text = "No se pudo iniciar";
             SetMonitoringControls(false, false);
             MessageBox.Show(this, exception.Message, "Error al iniciar el diagnóstico", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
-    private async Task SampleOnceAsync()
+    private Task SampleOnceAsync()
     {
         if (_session is null || _samplingCancellation is null || _sampling || _closing)
         {
-            return;
+            return Task.CompletedTask;
         }
 
         _sampling = true;
+        var session = _session;
+        var cancellation = _samplingCancellation;
+        var task = SampleCoreAsync(session, cancellation);
+        _activeSampleTask = task;
+        return AwaitSampleTaskAsync(task, cancellation);
+    }
+
+    private async Task AwaitSampleTaskAsync(Task task, CancellationTokenSource cancellation)
+    {
         try
         {
-            var snapshot = await _session.SampleAsync(_samplingCancellation.Token);
-            UpdateDashboard(snapshot);
-            AppendLog(FormatLiveLog(snapshot));
-            if (_session.PeriodicLogIsDue())
+            await task;
+        }
+        finally
+        {
+            if (ReferenceEquals(_activeSampleTask, task))
             {
-                AppendLog(_session.BuildReport("periódico"));
+                _activeSampleTask = null;
+            }
+
+            if (_closing)
+            {
+                cancellation.Dispose();
             }
         }
-        catch (OperationCanceledException) when (_samplingCancellation.IsCancellationRequested)
+    }
+
+    private async Task SampleCoreAsync(DiagnosticSession session, CancellationTokenSource cancellation)
+    {
+        var token = cancellation.Token;
+        try
+        {
+            var snapshot = await session.SampleAsync(token);
+            UpdateDashboard(snapshot);
+            AppendLog(FormatLiveLog(snapshot));
+            if (session.PeriodicLogIsDue())
+            {
+                AppendLog(session.BuildReport("periódico"));
+            }
+            AppendCsv(FormatCsv(snapshot));
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
         }
         catch (Exception exception)
         {
             _timer.Stop();
             _status.Text = "Error durante la medición";
+            SetMonitoringControls(true, true);
             MessageBox.Show(this, exception.Message, "Error durante el diagnóstico", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
         finally
@@ -270,6 +349,9 @@ internal sealed class MainForm : Form
                 : stats.LossPercent > 0.5 ? Color.DarkGoldenrod : Color.DarkGreen;
         }
 
+        _grid.Columns["loss"]!.HeaderText = snapshot.Targets.Any(target => target.Target.Type == ProbeType.Tcp)
+            ? "Pérdida / fallos TCP"
+            : "Pérdida";
         _chart.AddSample(DateTime.Now, snapshot.LastMeasurements);
         var diagnosis = snapshot.Diagnosis;
         _diagnosis.Text = $"{diagnosis.Title}{Environment.NewLine}{diagnosis.Explanation}" +
@@ -278,12 +360,21 @@ internal sealed class MainForm : Form
         {
             "PROBLEMA" => Color.Firebrick,
             "ATENCION" => Color.DarkGoldenrod,
+            "DATOS_INSUFICIENTES" => Color.FromArgb(57, 91, 145),
             _ => Color.DarkGreen
         };
-        _details.Text = $"Duración: {snapshot.Duration:hh\\:mm\\:ss} | Línea base: " +
+        _details.Text = $"Duración: {FormatDuration(snapshot.Duration)} | Línea base: " +
                         (snapshot.SamplesUntilBaseline == 0 ? "lista" : $"en {snapshot.SamplesUntilBaseline} muestras") +
                         $"{Environment.NewLine}{Environment.NewLine}Eventos recientes{Environment.NewLine}" +
                         (snapshot.RecentEvents.Count == 0 ? "Sin pérdidas ni picos ≥120 ms." : string.Join(Environment.NewLine, snapshot.RecentEvents.TakeLast(10)));
+    }
+
+    private static string FormatDuration(TimeSpan duration)
+    {
+        var totalHours = (int)duration.TotalHours;
+        return duration.TotalDays >= 1
+                        ? $"{(int)duration.TotalDays}d {duration.Hours:00}:{duration.Minutes:00}:{duration.Seconds:00}"
+                        : $"{totalHours:00}:{duration.Minutes:00}:{duration.Seconds:00}";
     }
 
     private static string FormatLiveLog(MonitorSnapshot snapshot)
@@ -317,17 +408,23 @@ internal sealed class MainForm : Form
         _timer.Start();
     }
 
-    private void FinishMonitoring()
+    private async Task FinishMonitoringAsync()
     {
         _timer.Stop();
+        var cancellation = _samplingCancellation;
+        cancellation?.Cancel();
+        if (_activeSampleTask is not null)
+        {
+            await _activeSampleTask;
+        }
+
         if (_session is not null)
         {
             ShowReport("final");
             _session = null;
         }
 
-        _samplingCancellation?.Cancel();
-        _samplingCancellation?.Dispose();
+        cancellation?.Dispose();
         _samplingCancellation = null;
         _status.Text = "Monitoreo finalizado";
         SetMonitoringControls(false, false);
@@ -341,6 +438,10 @@ internal sealed class MainForm : Form
         }
 
         var report = _session.BuildReport(type);
+        if (type == "final")
+        {
+            _lastReport = report;
+        }
         AppendLog(report);
         using var window = new ReportForm(report);
         window.ShowDialog(this);
@@ -348,16 +449,10 @@ internal sealed class MainForm : Form
 
     private void OpenLog()
     {
-        if (!File.Exists(_logPath))
-        {
-            MessageBox.Show(this, "Todavía no hay un registro. Iniciá el monitoreo primero.", "Registro de diagnóstico",
-                MessageBoxButtons.OK, MessageBoxIcon.Information);
-            return;
-        }
-
         try
         {
-            Process.Start(new ProcessStartInfo { FileName = _logPath, UseShellExecute = true });
+            Directory.CreateDirectory(_logDirectory);
+            Process.Start(new ProcessStartInfo { FileName = _logDirectory, UseShellExecute = true });
         }
         catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
         {
@@ -375,15 +470,128 @@ internal sealed class MainForm : Form
 
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(_logPath)!);
-            File.AppendAllText(_logPath, text + Environment.NewLine, new UTF8Encoding(false));
+            if (_sessionLogPath is null)
+            {
+                return;
+            }
+
+            File.AppendAllText(_sessionLogPath, text + Environment.NewLine, new UTF8Encoding(false));
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             _loggingAvailable = false;
             _status.Text = "No se pudo escribir el registro";
-            MessageBox.Show(this, $"El monitoreo sigue, pero no se pudo guardar el registro en:{Environment.NewLine}{_logPath}{Environment.NewLine}{Environment.NewLine}{exception.Message}",
+            MessageBox.Show(this, $"El monitoreo sigue, pero no se pudo guardar el registro en:{Environment.NewLine}{_sessionLogPath}{Environment.NewLine}{Environment.NewLine}{exception.Message}",
                 "Error de registro", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void AppendCsv(string text)
+    {
+        if (!_csvAvailable || _sessionCsvPath is null)
+        {
+            return;
+        }
+
+        try
+        {
+            File.AppendAllText(_sessionCsvPath, text + Environment.NewLine, new UTF8Encoding(true));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            _csvAvailable = false;
+            MessageBox.Show(this, $"El monitoreo sigue, pero no se pudo guardar el CSV:{Environment.NewLine}{_sessionCsvPath}{Environment.NewLine}{Environment.NewLine}{exception.Message}",
+                "Error al guardar CSV", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private static string FormatCsv(MonitorSnapshot snapshot)
+    {
+        return string.Join(Environment.NewLine, snapshot.Targets.Select(target =>
+        {
+            var value = snapshot.LastMeasurements[target.Target.Key];
+            var result = value < 0 ? "sin respuesta" : "correcto";
+            return string.Join(",",
+                CsvField(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture)),
+                CsvField(target.Target.Name),
+                CsvField(target.Target.Type.ToString()),
+                CsvField(target.Target.Address),
+                target.Target.Type == ProbeType.Tcp ? target.Target.Port.ToString(CultureInfo.InvariantCulture) : "",
+                value < 0 ? "" : value.ToString(CultureInfo.InvariantCulture),
+                CsvField(result));
+        }));
+    }
+
+    private static string CsvField(string value) => $"\"{value.Replace("\"", "\"\"")}\"";
+
+    private void ShowSettings()
+    {
+        using var dialog = new SettingsForm(_settings);
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        _settings = dialog.Settings;
+        _status.Text = "Configuración guardada; se aplicará en la próxima sesión";
+    }
+
+    private void ExportReport()
+    {
+        var report = _session?.BuildReport("exportado") ?? _lastReport;
+        if (string.IsNullOrWhiteSpace(report))
+        {
+            MessageBox.Show(this, "Todavía no hay un informe para exportar.", "Exportar informe",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        using var dialog = new SaveFileDialog
+        {
+            Filter = "Informe de texto (*.txt)|*.txt",
+            FileName = $"diagnostico_{DateTime.Now:yyyyMMdd_HHmmss}.txt"
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        try
+        {
+            File.WriteAllText(dialog.FileName, report, new UTF8Encoding(true));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, exception.Message, "No se pudo exportar el informe", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void ExportCsv()
+    {
+        if (_sessionCsvPath is null || !File.Exists(_sessionCsvPath))
+        {
+            MessageBox.Show(this, "Todavía no hay datos CSV para exportar. Iniciá una sesión y esperá la primera medición.",
+                "Exportar CSV", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        using var dialog = new SaveFileDialog
+        {
+            Filter = "Datos CSV (*.csv)|*.csv",
+            FileName = Path.GetFileName(_sessionCsvPath)
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        try
+        {
+            File.Copy(_sessionCsvPath, dialog.FileName, true);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, exception.Message, "No se pudo exportar el CSV", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -394,6 +602,9 @@ internal sealed class MainForm : Form
         _resumeButton.Enabled = active && paused;
         _finishButton.Enabled = active;
         _reportButton.Enabled = active && _session is not null;
+        _exportReportButton.Enabled = active || _lastReport is not null;
+        _exportCsvButton.Enabled = _sessionCsvPath is not null;
+        _settingsButton.Enabled = !active;
     }
 
     private void OnFormClosing(object? sender, FormClosingEventArgs e)
@@ -406,7 +617,10 @@ internal sealed class MainForm : Form
         }
 
         _samplingCancellation?.Cancel();
-        _samplingCancellation?.Dispose();
+        if (_activeSampleTask is null)
+        {
+            _samplingCancellation?.Dispose();
+        }
     }
 }
 
@@ -443,6 +657,9 @@ internal sealed class ReportForm : Form
 internal sealed class LatencyChart : Control
 {
     private sealed record SamplePoint(DateTime Timestamp, int? Value);
+    private sealed record ChartEvent(DateTime Timestamp, string Label);
+    private const int MaximumPointsPerSeries = 8192;
+    private const int MaximumEventMarkers = 2048;
 
     private readonly Dictionary<string, List<SamplePoint>> _series = new(StringComparer.Ordinal)
     {
@@ -450,6 +667,7 @@ internal sealed class LatencyChart : Control
         ["cloudflare-icmp"] = new List<SamplePoint>(),
         ["google-icmp"] = new List<SamplePoint>()
     };
+    private readonly List<ChartEvent> _events = new();
     private readonly Dictionary<string, (string Name, Color Color)> _labels = new(StringComparer.Ordinal)
     {
         ["router"] = ("Router", Color.FromArgb(31, 132, 97)),
@@ -457,13 +675,21 @@ internal sealed class LatencyChart : Control
         ["google-icmp"] = ("Google", Color.FromArgb(218, 137, 51))
     };
     private readonly ToolTip _hoverTip = new() { InitialDelay = 250, ReshowDelay = 100, AutoPopDelay = 10000, ShowAlways = true };
+    private readonly ContextMenuStrip _viewMenu = new();
     private DateTime? _sessionStartedAt;
     private string? _lastHoverText;
+    private TimeSpan? _viewDuration;
 
     public LatencyChart()
     {
         DoubleBuffered = true;
         SetStyle(ControlStyles.ResizeRedraw, true);
+        _viewMenu.Items.Add("Toda la sesión", null, (_, _) => SetViewDuration(null));
+        _viewMenu.Items.Add("Últimos 5 minutos", null, (_, _) => SetViewDuration(TimeSpan.FromMinutes(5)));
+        _viewMenu.Items.Add("Últimos 15 minutos", null, (_, _) => SetViewDuration(TimeSpan.FromMinutes(15)));
+        _viewMenu.Items.Add("Última hora", null, (_, _) => SetViewDuration(TimeSpan.FromHours(1)));
+        _viewMenu.Items.Add("Últimas 6 horas", null, (_, _) => SetViewDuration(TimeSpan.FromHours(6)));
+        ContextMenuStrip = _viewMenu;
         MouseMove += ShowHoveredSeries;
         MouseLeave += (_, _) =>
         {
@@ -479,7 +705,9 @@ internal sealed class LatencyChart : Control
             values.Clear();
         }
 
+        _events.Clear();
         _sessionStartedAt = startedAt;
+        _viewDuration = null;
         _lastHoverText = null;
         _hoverTip.Hide(this);
         Invalidate();
@@ -490,8 +718,21 @@ internal sealed class LatencyChart : Control
         foreach (var key in _series.Keys)
         {
             var values = _series[key];
-            values.Add(new SamplePoint(timestamp,
-                measurements.TryGetValue(key, out var value) && value >= 0 ? value : null));
+            var value = measurements.TryGetValue(key, out var measured) && measured >= 0 ? measured : (int?)null;
+            values.Add(new SamplePoint(timestamp, value));
+            if (value is null || value >= 120)
+            {
+                _events.Add(new ChartEvent(timestamp, $"{_labels[key].Name}: {(value is null ? "sin respuesta" : $"{value} ms")}"));
+                if (_events.Count > MaximumEventMarkers)
+                {
+                    _events.RemoveAt(0);
+                }
+            }
+
+            if (values.Count > MaximumPointsPerSeries)
+            {
+                ReducePoints(values);
+            }
         }
 
         Invalidate();
@@ -509,24 +750,27 @@ internal sealed class LatencyChart : Control
         using var borderPen = new Pen(Color.FromArgb(220, 227, 235));
         using var font = new Font("Segoe UI", 8.5F);
         using var titleFont = new Font("Segoe UI Semibold", 9.5F, FontStyle.Bold);
-        graphics.DrawString("Latencia ICMP en vivo (desde el inicio de la sesión; escala hasta 200 ms)", titleFont, textBrush, 12, 10);
+        var sessionStart = _sessionStartedAt ?? DateTime.Now;
+        var now = DateTime.Now;
+        var viewStart = _viewDuration.HasValue
+            ? Max(sessionStart, now - _viewDuration.Value)
+            : sessionStart;
+        var durationSeconds = Math.Max(0.001, (now - viewStart).TotalSeconds);
+        var latencyScale = GetLatencyScale();
+        var viewName = _viewDuration.HasValue ? $"últimos {FormatViewDuration(_viewDuration.Value)}" : "toda la sesión";
+        graphics.DrawString($"Latencia ICMP en vivo ({viewName}; clic derecho para cambiar vista; escala 0-{latencyScale} ms)",
+            titleFont, textBrush, 12, 10);
 
-        const int left = 48;
-        const int right = 16;
-        const int top = 42;
-        const int bottom = 40;
-        var plot = new Rectangle(left, top, Math.Max(1, ClientSize.Width - left - right), Math.Max(1, ClientSize.Height - top - bottom));
-        for (var value = 0; value <= 200; value += 50)
+        var plot = GetPlotRectangle();
+        var latencyStep = latencyScale / 4;
+        for (var value = 0; value <= latencyScale; value += latencyStep)
         {
-            var y = plot.Bottom - (int)(value / 200f * plot.Height);
+            var y = plot.Bottom - (int)(value / (float)latencyScale * plot.Height);
             graphics.DrawLine(gridPen, plot.Left, y, plot.Right, y);
             graphics.DrawString(value.ToString(CultureInfo.InvariantCulture), font, textBrush, 8, y - 8);
         }
 
-        var now = DateTime.Now;
-        var startedAt = _sessionStartedAt ?? now;
-        var durationSeconds = Math.Max(1, (now - startedAt).TotalSeconds);
-        DrawTimeAxis(graphics, plot, startedAt, now, durationSeconds, gridPen, textBrush, font);
+        DrawTimeAxis(graphics, plot, viewStart, now, durationSeconds, gridPen, textBrush, font);
         graphics.DrawRectangle(borderPen, plot);
         var legendX = plot.Left + 6;
         foreach (var (key, label) in _labels)
@@ -537,8 +781,20 @@ internal sealed class LatencyChart : Control
             legendX += 95;
             var values = _series[key];
             var points = new List<PointF>();
-            foreach (var sample in values)
+            var startIndex = FindFirstAtOrAfter(values, viewStart);
+            if (startIndex > 0)
             {
+                startIndex--;
+            }
+
+            for (var index = startIndex; index < values.Count; index++)
+            {
+                var sample = values[index];
+                if (sample.Timestamp > now)
+                {
+                    break;
+                }
+
                 if (!sample.Value.HasValue)
                 {
                     DrawSegments(graphics, points, label.Color);
@@ -546,12 +802,19 @@ internal sealed class LatencyChart : Control
                     continue;
                 }
 
-                var x = plot.Left + (float)((sample.Timestamp - startedAt).TotalSeconds / durationSeconds * plot.Width);
-                var y = plot.Bottom - Math.Min(200, sample.Value.Value) / 200f * plot.Height;
+                var x = plot.Left + (float)((sample.Timestamp - viewStart).TotalSeconds / durationSeconds * plot.Width);
+                var y = plot.Bottom - Math.Min(latencyScale, sample.Value.Value) / (float)latencyScale * plot.Height;
                 points.Add(new PointF(x, y));
             }
 
             DrawSegments(graphics, points, label.Color);
+        }
+
+        using var eventPen = new Pen(Color.FromArgb(160, 204, 68, 52), 1F) { DashStyle = DashStyle.Dash };
+        foreach (var marker in _events.Where(item => item.Timestamp >= viewStart && item.Timestamp <= now))
+        {
+            var x = plot.Left + (int)((marker.Timestamp - viewStart).TotalSeconds / durationSeconds * plot.Width);
+            graphics.DrawLine(eventPen, x, plot.Top, x, plot.Bottom);
         }
     }
 
@@ -618,11 +881,15 @@ internal sealed class LatencyChart : Control
             return;
         }
 
-        var startedAt = _sessionStartedAt.Value;
         var now = DateTime.Now;
-        var durationSeconds = Math.Max(1, (now - startedAt).TotalSeconds);
-        var cursorTime = startedAt.AddSeconds(Math.Clamp(
+        var sessionStart = _sessionStartedAt.Value;
+        var viewStart = _viewDuration.HasValue
+            ? Max(sessionStart, now - _viewDuration.Value)
+            : sessionStart;
+        var durationSeconds = Math.Max(0.001, (now - viewStart).TotalSeconds);
+        var cursorTime = viewStart.AddSeconds(Math.Clamp(
             (e.X - plot.Left) / (double)plot.Width * durationSeconds, 0, durationSeconds));
+        var latencyScale = GetLatencyScale();
         var closestDistance = 12d;
         string? hoverText = null;
 
@@ -636,6 +903,11 @@ internal sealed class LatencyChart : Control
             var index = FindNearestSample(samples, cursorTime);
             var startIndex = Math.Max(0, index - 1);
             var endIndex = Math.Min(samples.Count - 2, index);
+            if (samples[index].Timestamp < viewStart || samples[index].Timestamp > now)
+            {
+                continue;
+            }
+
             if (samples.Count == 1)
             {
                 startIndex = 0;
@@ -651,10 +923,10 @@ internal sealed class LatencyChart : Control
                     continue;
                 }
 
-                var firstX = plot.Left + (first.Timestamp - startedAt).TotalSeconds / durationSeconds * plot.Width;
-                var secondX = plot.Left + (second.Timestamp - startedAt).TotalSeconds / durationSeconds * plot.Width;
-                var firstY = plot.Bottom - Math.Min(200, first.Value.Value) / 200d * plot.Height;
-                var secondY = plot.Bottom - Math.Min(200, second.Value.Value) / 200d * plot.Height;
+                var firstX = plot.Left + (first.Timestamp - viewStart).TotalSeconds / durationSeconds * plot.Width;
+                var secondX = plot.Left + (second.Timestamp - viewStart).TotalSeconds / durationSeconds * plot.Width;
+                var firstY = plot.Bottom - Math.Min(latencyScale, first.Value.Value) / (double)latencyScale * plot.Height;
+                var secondY = plot.Bottom - Math.Min(latencyScale, second.Value.Value) / (double)latencyScale * plot.Height;
                 var fraction = secondX == firstX ? 0 : Math.Clamp((e.X - firstX) / (secondX - firstX), 0, 1);
                 var pointX = firstX + (secondX - firstX) * fraction;
                 var pointY = firstY + (secondY - firstY) * fraction;
@@ -670,6 +942,15 @@ internal sealed class LatencyChart : Control
                 hoverText = $"{label} | Hora: {cursorTime:HH:mm:ss}{Environment.NewLine}" +
                             $"Latencia aproximada: {latency} ms";
             }
+        }
+
+        var hoveredEvent = _events
+            .Where(item => Math.Abs((item.Timestamp - cursorTime).TotalSeconds) <= Math.Max(1, durationSeconds / plot.Width * 6))
+            .OrderBy(item => Math.Abs((item.Timestamp - cursorTime).Ticks))
+            .FirstOrDefault();
+        if (hoveredEvent is not null)
+        {
+            hoverText = $"{hoveredEvent.Label} | Hora: {hoveredEvent.Timestamp:HH:mm:ss}{Environment.NewLine}Evento de latencia";
         }
 
         if (hoverText is null)
@@ -695,6 +976,97 @@ internal sealed class LatencyChart : Control
         return new Rectangle(left, top, Math.Max(1, ClientSize.Width - left - right),
             Math.Max(1, ClientSize.Height - top - bottom));
     }
+
+    private void SetViewDuration(TimeSpan? duration)
+    {
+        _viewDuration = duration;
+        _lastHoverText = null;
+        _hoverTip.Hide(this);
+        Invalidate();
+    }
+
+    private int GetLatencyScale()
+    {
+        var maximum = _series.Values.SelectMany(values => values)
+            .Where(point => point.Value.HasValue)
+            .Select(point => point.Value!.Value)
+            .DefaultIfEmpty(0)
+            .Max();
+        if (maximum <= 200)
+        {
+            return 200;
+        }
+
+        var magnitude = Math.Pow(10, Math.Floor(Math.Log10(maximum / 4d)));
+        var step = Math.Ceiling(maximum / (magnitude * 4)) * magnitude;
+        return Math.Max(200, (int)(step * 4));
+    }
+
+    private static int FindFirstAtOrAfter(IReadOnlyList<SamplePoint> samples, DateTime timestamp)
+    {
+        var low = 0;
+        var high = samples.Count;
+        while (low < high)
+        {
+            var middle = low + (high - low) / 2;
+            if (samples[middle].Timestamp < timestamp)
+            {
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle;
+            }
+        }
+
+        return low;
+    }
+
+    private static void ReducePoints(List<SamplePoint> samples)
+    {
+        const int bucketSize = 4;
+        var reduced = new List<SamplePoint>(samples.Count / 2 + 2) { samples[0] };
+        for (var offset = 1; offset < samples.Count; offset += bucketSize)
+        {
+            var count = Math.Min(bucketSize, samples.Count - offset);
+            var bucket = samples.GetRange(offset, count);
+            var candidates = new List<SamplePoint>();
+            var missing = bucket.FirstOrDefault(point => !point.Value.HasValue);
+            if (missing is not null)
+            {
+                candidates.Add(missing);
+            }
+
+            var successful = bucket.Where(point => point.Value.HasValue).ToArray();
+            if (successful.Length > 0)
+            {
+                candidates.Add(successful.MinBy(point => point.Value) !);
+                var maximum = successful.MaxBy(point => point.Value) !;
+                if (maximum.Timestamp != candidates[^1].Timestamp)
+                {
+                    candidates.Add(maximum);
+                }
+            }
+
+            foreach (var candidate in candidates.OrderBy(point => point.Timestamp))
+            {
+                if (candidate.Timestamp != reduced[^1].Timestamp)
+                {
+                    reduced.Add(candidate);
+                }
+            }
+        }
+
+        samples.Clear();
+        samples.AddRange(reduced);
+    }
+
+    private static string FormatViewDuration(TimeSpan duration)
+    {
+        return duration.TotalHours >= 1 ? $"{(int)duration.TotalHours} h" : $"{(int)duration.TotalMinutes} min";
+    }
+
+    private static DateTime Max(DateTime first, DateTime second) => first > second ? first : second;
 
     private static int FindNearestSample(IReadOnlyList<SamplePoint> samples, DateTime timestamp)
     {
