@@ -1,0 +1,15 @@
+C:\Users\Fede\Desktop\Repos\diagnostico_lag.worktrees\el-repositorio-es-el-siguiente-c-users-fede\DiagnosticoLag\bin\Release\net8.0-windows\DiagnosticoLag.exe
+C:\Users\Fede\Desktop\Repos\diagnostico_lag.worktrees\el-repositorio-es-el-siguiente-c-users-fede\DiagnosticoLag\bin\Release\net8.0-windows\DiagnosticoLag.deps.json
+C:\Users\Fede\Desktop\Repos\diagnostico_lag.worktrees\el-repositorio-es-el-siguiente-c-users-fede\DiagnosticoLag\bin\Release\net8.0-windows\DiagnosticoLag.runtimeconfig.json
+C:\Users\Fede\Desktop\Repos\diagnostico_lag.worktrees\el-repositorio-es-el-siguiente-c-users-fede\DiagnosticoLag\bin\Release\net8.0-windows\DiagnosticoLag.dll
+C:\Users\Fede\Desktop\Repos\diagnostico_lag.worktrees\el-repositorio-es-el-siguiente-c-users-fede\DiagnosticoLag\bin\Release\net8.0-windows\DiagnosticoLag.pdb
+C:\Users\Fede\Desktop\Repos\diagnostico_lag.worktrees\el-repositorio-es-el-siguiente-c-users-fede\DiagnosticoLag\obj\Release\net8.0-windows\DiagnosticoLag.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\Fede\Desktop\Repos\diagnostico_lag.worktrees\el-repositorio-es-el-siguiente-c-users-fede\DiagnosticoLag\obj\Release\net8.0-windows\DiagnosticoLag.AssemblyInfoInputs.cache
+C:\Users\Fede\Desktop\Repos\diagnostico_lag.worktrees\el-repositorio-es-el-siguiente-c-users-fede\DiagnosticoLag\obj\Release\net8.0-windows\DiagnosticoLag.AssemblyInfo.cs
+C:\Users\Fede\Desktop\Repos\diagnostico_lag.worktrees\el-repositorio-es-el-siguiente-c-users-fede\DiagnosticoLag\obj\Release\net8.0-windows\DiagnosticoLag.csproj.CoreCompileInputs.cache
+C:\Users\Fede\Desktop\Repos\diagnostico_lag.worktrees\el-repositorio-es-el-siguiente-c-users-fede\DiagnosticoLag\obj\Release\net8.0-windows\DiagnosticoLag.sourcelink.json
+C:\Users\Fede\Desktop\Repos\diagnostico_lag.worktrees\el-repositorio-es-el-siguiente-c-users-fede\DiagnosticoLag\obj\Release\net8.0-windows\DiagnosticoLag.dll
+C:\Users\Fede\Desktop\Repos\diagnostico_lag.worktrees\el-repositorio-es-el-siguiente-c-users-fede\DiagnosticoLag\obj\Release\net8.0-windows\refint\DiagnosticoLag.dll
+C:\Users\Fede\Desktop\Repos\diagnostico_lag.worktrees\el-repositorio-es-el-siguiente-c-users-fede\DiagnosticoLag\obj\Release\net8.0-windows\DiagnosticoLag.pdb
+C:\Users\Fede\Desktop\Repos\diagnostico_lag.worktrees\el-repositorio-es-el-siguiente-c-users-fede\DiagnosticoLag\obj\Release\net8.0-windows\DiagnosticoLag.genruntimeconfig.cache
+C:\Users\Fede\Desktop\Repos\diagnostico_lag.worktrees\el-repositorio-es-el-siguiente-c-users-fede\DiagnosticoLag\obj\Release\net8.0-windows\ref\DiagnosticoLag.dll
