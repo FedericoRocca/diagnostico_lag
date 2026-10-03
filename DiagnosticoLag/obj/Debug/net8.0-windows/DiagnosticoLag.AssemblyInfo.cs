@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("DiagnosticoLag")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+a36e4892597606c329d006b282da75440fbfa9a0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+4c9e520ac102d8bdbcaf558b15bead7972501caa")]
 [assembly: System.Reflection.AssemblyProductAttribute("DiagnosticoLag")]
 [assembly: System.Reflection.AssemblyTitleAttribute("DiagnosticoLag")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

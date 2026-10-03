@@ -1,1 +1,4 @@
 registro_latencia.txt
+**/bin/
+**/obj/
+.vs/

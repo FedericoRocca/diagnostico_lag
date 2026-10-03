@@ -29,6 +29,17 @@ internal sealed class LatencyStatistics
 
     public int Samples { get; private set; }
 
+    public static StatSummary FromSamples(IEnumerable<int> samples)
+    {
+        var statistics = new LatencyStatistics();
+        foreach (var sample in samples)
+        {
+            statistics.Add(sample);
+        }
+
+        return statistics.Snapshot();
+    }
+
     public void Add(int milliseconds)
     {
         Samples++;

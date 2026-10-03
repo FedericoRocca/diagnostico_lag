@@ -14,11 +14,11 @@
   "project": {
     "version": "1.0.0",
     "restore": {
-      "projectUniqueName": "C:\\Users\\Fede\\Desktop\\Repos\\diagnostico_lag.worktrees\\el-repositorio-es-el-siguiente-c-users-fede\\DiagnosticoLag\\DiagnosticoLag.csproj",
+      "projectUniqueName": "C:\\Users\\Fede\\Desktop\\Repos\\diagnostico_lag\\DiagnosticoLag\\DiagnosticoLag.csproj",
       "projectName": "DiagnosticoLag",
-      "projectPath": "C:\\Users\\Fede\\Desktop\\Repos\\diagnostico_lag.worktrees\\el-repositorio-es-el-siguiente-c-users-fede\\DiagnosticoLag\\DiagnosticoLag.csproj",
+      "projectPath": "C:\\Users\\Fede\\Desktop\\Repos\\diagnostico_lag\\DiagnosticoLag\\DiagnosticoLag.csproj",
       "packagesPath": "C:\\Users\\Fede\\.nuget\\packages\\",
-      "outputPath": "C:\\Users\\Fede\\Desktop\\Repos\\diagnostico_lag.worktrees\\el-repositorio-es-el-siguiente-c-users-fede\\DiagnosticoLag\\obj\\",
+      "outputPath": "C:\\Users\\Fede\\Desktop\\Repos\\diagnostico_lag\\DiagnosticoLag\\obj\\",
       "projectStyle": "PackageReference",
       "fallbackFolders": [
         "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"

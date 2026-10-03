@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 
 namespace DiagnosticoLag;
@@ -27,12 +28,13 @@ internal sealed record MonitorSnapshot(
 
 internal sealed class DiagnosticSession
 {
-    private const string Cloudflare = "1.1.1.1";
-    private const string Google = "8.8.8.8";
+    private readonly DiagnosticSettings _settings;
     private readonly List<ProbeTarget> _targets;
     private readonly Dictionary<string, LatencyStatistics> _statistics = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Queue<int>> _recentMeasurements = new(StringComparer.Ordinal);
     private readonly Queue<string> _recentEvents = new();
     private readonly Dictionary<string, List<DateTime>> _eventTimes = new(StringComparer.Ordinal);
+    private readonly Stopwatch _elapsed = Stopwatch.StartNew();
     private readonly DateTime _startedAt = DateTime.Now;
     private DateTime _lastPeriodicLog = DateTime.Now;
     private int _samples;
@@ -41,8 +43,12 @@ internal sealed class DiagnosticSession
     private int? _lolPort;
     private DateTime _lastLolSearchAt = DateTime.MinValue;
 
-    private DiagnosticSession(string routerAddress, string? ispAddress, ConnectionInfo connection, DateTime startedAt)
+    [DllImport("iphlpapi.dll", ExactSpelling = true)]
+    private static extern uint GetBestInterface(uint destinationAddress, out uint interfaceIndex);
+
+    private DiagnosticSession(DiagnosticSettings settings, string routerAddress, string? ispAddress, ConnectionInfo connection, DateTime startedAt)
     {
+        _settings = settings;
         RouterAddress = routerAddress;
         IspAddress = ispAddress;
         Connection = connection;
@@ -50,10 +56,10 @@ internal sealed class DiagnosticSession
         _targets = new List<ProbeTarget>
         {
             new("router", "Router/Modem", routerAddress, ProbeType.Icmp),
-            new("cloudflare-icmp", "Cloudflare ICMP", Cloudflare, ProbeType.Icmp),
-            new("cloudflare-tcp", "Cloudflare TCP", Cloudflare, ProbeType.Tcp),
-            new("google-icmp", "Google ICMP", Google, ProbeType.Icmp),
-            new("google-tcp", "Google TCP", Google, ProbeType.Tcp)
+            new("cloudflare-icmp", "Destino 1 ICMP", settings.CloudflareAddress, ProbeType.Icmp),
+            new("cloudflare-tcp", "Destino 1 TCP", settings.CloudflareAddress, ProbeType.Tcp),
+            new("google-icmp", "Destino 2 ICMP", settings.GoogleAddress, ProbeType.Icmp),
+            new("google-tcp", "Destino 2 TCP", settings.GoogleAddress, ProbeType.Tcp)
         };
 
         if (!string.IsNullOrWhiteSpace(ispAddress))
@@ -64,6 +70,7 @@ internal sealed class DiagnosticSession
         foreach (var target in _targets)
         {
             _statistics.Add(target.Key, new LatencyStatistics());
+            _recentMeasurements.Add(target.Key, new Queue<int>());
         }
     }
 
@@ -72,12 +79,12 @@ internal sealed class DiagnosticSession
     public ConnectionInfo Connection { get; }
     public DateTime StartedAt => _startedAt;
 
-    public static async Task<DiagnosticSession> CreateAsync(CancellationToken cancellationToken)
+    public static async Task<DiagnosticSession> CreateAsync(DiagnosticSettings settings, CancellationToken cancellationToken)
     {
         var startedAt = DateTime.Now;
-        var (router, connection) = DetectConnection();
-        var isp = await FindIspFirstHopAsync(router, cancellationToken);
-        return new DiagnosticSession(router, isp, connection, startedAt);
+        var (router, connection) = DetectConnection(settings.NetworkInterfaceId);
+        var isp = await FindIspFirstHopAsync(router, settings.CloudflareAddress, cancellationToken);
+        return new DiagnosticSession(settings, router, isp, connection, startedAt);
     }
 
     public async Task<MonitorSnapshot> SampleAsync(CancellationToken cancellationToken)
@@ -90,6 +97,8 @@ internal sealed class DiagnosticSession
             _targets.Add(new ProbeTarget("lol-tcp", "LoL (TCP, aproximado)", _lolAddress, ProbeType.Tcp, _lolPort.Value));
             _statistics.Add("lol-icmp", new LatencyStatistics());
             _statistics.Add("lol-tcp", new LatencyStatistics());
+            _recentMeasurements.Add("lol-icmp", new Queue<int>());
+            _recentMeasurements.Add("lol-tcp", new Queue<int>());
         }
 
         var timestamp = DateTime.Now;
@@ -101,6 +110,12 @@ internal sealed class DiagnosticSession
             var target = _targets[index];
             var value = measurements[index];
             _statistics[target.Key].Add(value);
+            var recent = _recentMeasurements[target.Key];
+            recent.Enqueue(value);
+            if (recent.Count > 60)
+            {
+                recent.Dequeue();
+            }
             lastMeasurements.Add(target.Key, value);
             if (target.Type == ProbeType.Icmp && (value < 0 || value >= 120))
             {
@@ -114,10 +129,10 @@ internal sealed class DiagnosticSession
             _baseline = new Baseline(Summary("router"), Summary("cloudflare-icmp"), Summary("google-icmp"));
         }
 
-        return CreateSnapshot(DateTime.Now - _startedAt, lastMeasurements);
+        return CreateSnapshot(_elapsed.Elapsed, lastMeasurements);
     }
 
-    public MonitorSnapshot CurrentSnapshot() => CreateSnapshot(DateTime.Now - _startedAt, new Dictionary<string, int>());
+    public MonitorSnapshot CurrentSnapshot() => CreateSnapshot(_elapsed.Elapsed, new Dictionary<string, int>());
 
     public bool PeriodicLogIsDue()
     {
@@ -140,13 +155,14 @@ internal sealed class DiagnosticSession
             $"INFORME {reportType.ToUpperInvariant()} - DIAGNÓSTICO DE RED",
             "=======================================================================",
             $"Fecha: {DateTime.Now:yyyy-MM-dd HH:mm:ss}",
-            $"Duración: {snapshot.Duration:hh\\:mm\\:ss}",
+            $"Duración: {FormatDuration(snapshot.Duration)}",
             $"Conexión: {Connection.Type} ({Connection.Detail})",
             $"Router: {RouterAddress} | ISP (primer salto): {IspAddress ?? "no detectado"}",
+            $"Destinos externos: { _settings.CloudflareAddress} | {_settings.GoogleAddress}",
             $"LoL (destino aproximado): {(_lolAddress is null ? "no detectado" : $"{_lolAddress}:{_lolPort}")}",
             _baseline is null
                 ? $"Línea base: pendiente ({Math.Max(0, 60 - _samples)} muestras restantes)"
-                : $"Línea base inicial: router {_baseline.Router.Average} ms / jitter {_baseline.Router.Jitter} ms; Cloudflare {_baseline.Cloudflare.Average} ms; Google {_baseline.Google.Average} ms",
+                : $"Línea base inicial (primeros 60 sondeos): router {_baseline.Router.Average} ms / jitter {_baseline.Router.Jitter} ms; destino 1 {_baseline.Cloudflare.Average} ms; destino 2 {_baseline.Google.Average} ms",
             ""
         };
 
@@ -172,8 +188,13 @@ internal sealed class DiagnosticSession
         }
 
         report.Add("");
+        report.Add($"NOTA: se requieren al menos 30 muestras por destino para incluirlo en el diagnóstico. Se sondea cada {_settings.SampleIntervalSeconds} segundo(s).");
         report.Add("NOTA: el primer salto del ISP es orientativo. El destino LoL detectado es una conexión TCP del cliente y no necesariamente el servidor UDP de la partida.");
         report.Add("NOTA: ICMP puede estar filtrado o recibir menor prioridad; las mediciones TCP en el puerto 443 aportan una referencia distinta.");
+        if (!_settings.IncludeLeagueInDiagnosis)
+        {
+            report.Add("NOTA: las mediciones aproximadas de League se muestran, pero no participan en el diagnóstico automático.");
+        }
         if (snapshot.RecentEvents.Count > 0)
         {
             report.Add("");
@@ -192,7 +213,11 @@ internal sealed class DiagnosticSession
             .Select(target => new TargetSnapshot(target, Summary(target.Key)))
             .ToArray();
         var lookup = targets.ToDictionary(item => item.Target.Key, item => item.Statistics, StringComparer.Ordinal);
-        var diagnosis = Diagnose(lookup);
+        var recentLookup = _recentMeasurements.ToDictionary(
+            item => item.Key,
+            item => LatencyStatistics.FromSamples(item.Value),
+            StringComparer.Ordinal);
+        var diagnosis = Diagnose(lookup, recentLookup);
         return new MonitorSnapshot(_startedAt, duration, targets, lastMeasurements, _recentEvents.ToArray(), Connection,
             RouterAddress, IspAddress, _lolAddress, _lolPort, diagnosis, Math.Max(0, 60 - _samples));
     }
@@ -269,8 +294,21 @@ internal sealed class DiagnosticSession
         }
     }
 
-    private DiagnosticResult Diagnose(IReadOnlyDictionary<string, StatSummary> values)
+    private DiagnosticResult Diagnose(
+        IReadOnlyDictionary<string, StatSummary> values,
+        IReadOnlyDictionary<string, StatSummary> recentValues)
     {
+        if (values["router"].Samples < 30)
+        {
+            var remaining = 30 - values["router"].Samples;
+            return new DiagnosticResult(
+                "DATOS_INSUFICIENTES",
+                "Midiendo: todavía no hay muestras suficientes",
+                $"Se necesitan al menos 30 muestras (faltan {remaining}) para evaluar los resultados. Una conclusión más confiable requiere dejar correr el monitoreo durante varios minutos.",
+                "Mantené el monitoreo activo mientras experimentás el problema.",
+                Array.Empty<string>());
+        }
+
         var localProblems = new List<string>();
         var ispProblems = new List<string>();
         var warnings = new List<string>();
@@ -288,10 +326,10 @@ internal sealed class DiagnosticSession
         if (Connection.Type == "Wi-Fi" && Connection.WifiSignal is < 50)
             warnings.Add($"Señal Wi-Fi baja ({Connection.WifiSignal}%); podría causar picos.");
 
-        AddInternetDiagnosis("Cloudflare", "cloudflare-icmp", "cloudflare-tcp", values, ispProblems, warnings);
-        AddInternetDiagnosis("Google", "google-icmp", "google-tcp", values, ispProblems, warnings);
+        AddInternetDiagnosis("Destino 1", "cloudflare-icmp", "cloudflare-tcp", values, ispProblems, warnings);
+        AddInternetDiagnosis("Destino 2", "google-icmp", "google-tcp", values, ispProblems, warnings);
 
-        if (_lolAddress is not null && values.ContainsKey("lol-icmp"))
+        if (_settings.IncludeLeagueInDiagnosis && _lolAddress is not null && values.ContainsKey("lol-icmp"))
         {
             AddInternetDiagnosis($"LoL ({_lolAddress}, aproximado)", "lol-icmp", "lol-tcp", values, ispProblems, warnings);
         }
@@ -310,7 +348,7 @@ internal sealed class DiagnosticSession
             warnings.Add("Los picos del router no se repiten en destinos externos; apunta más a Wi-Fi o al router que al ISP.");
         }
 
-        AddBaselineWarnings(values, warnings);
+        AddBaselineWarnings(recentValues, warnings);
         AddPeriodicWarnings(warnings);
 
         if (localProblems.Count > 0)
@@ -345,6 +383,11 @@ internal sealed class DiagnosticSession
     {
         var icmp = values[icmpKey];
         var tcp = values[tcpKey];
+        if (icmp.Samples < 30 || tcp.Samples < 30)
+        {
+            return;
+        }
+
         var icmpProblem = icmp.LossPercent > 3 || icmp.Average > 100 || icmp.Jitter > 15 || HasFrequentSpikes(icmp);
         var tcpProblem = tcp.LossPercent > 3 || tcp.Average > 150 || tcp.Jitter > 20 || HasFrequentSpikes(tcp);
 
@@ -361,19 +404,19 @@ internal sealed class DiagnosticSession
             warnings.Add("El destino aproximado de LoL no responde a ICMP; es común que servidores de juego filtren ping.");
     }
 
-    private void AddBaselineWarnings(IReadOnlyDictionary<string, StatSummary> values, ICollection<string> warnings)
+    private void AddBaselineWarnings(IReadOnlyDictionary<string, StatSummary> recentValues, ICollection<string> warnings)
     {
-        if (_baseline is null)
+        if (_baseline is null || recentValues["router"].Samples < 30)
         {
             return;
         }
 
-        CompareBaseline("Router", values["router"], _baseline.Router, warnings);
-        CompareBaseline("Cloudflare", values["cloudflare-icmp"], _baseline.Cloudflare, warnings);
-        CompareBaseline("Google", values["google-icmp"], _baseline.Google, warnings);
+        CompareBaseline("Router (últimas muestras)", recentValues["router"], _baseline.Router, warnings);
+        CompareBaseline("Destino 1 (últimas 60 muestras)", recentValues["cloudflare-icmp"], _baseline.Cloudflare, warnings);
+        CompareBaseline("Destino 2 (últimas 60 muestras)", recentValues["google-icmp"], _baseline.Google, warnings);
 
         var baselineRouter = _baseline.Router;
-        var currentRouter = values["router"];
+        var currentRouter = recentValues["router"];
         var jitterThreshold = Math.Max(baselineRouter.Jitter * 3, baselineRouter.Jitter + 5);
         if (currentRouter.Jitter >= jitterThreshold && currentRouter.Jitter > 3)
             warnings.Add($"El jitter actual del router ({currentRouter.Jitter} ms) supera ampliamente la línea base ({baselineRouter.Jitter} ms).");
@@ -385,10 +428,24 @@ internal sealed class DiagnosticSession
             warnings.Add($"{name}: promedio actual ({current.Average} ms) muy superior a la línea base ({baseline.Average} ms).");
     }
 
+    private static string FormatDuration(TimeSpan duration)
+    {
+        var totalHours = (int)duration.TotalHours;
+        return duration.TotalDays >= 1
+            ? $"{(int)duration.TotalDays}d {duration.Hours:00}:{duration.Minutes:00}:{duration.Seconds:00}"
+            : $"{totalHours:00}:{duration.Minutes:00}:{duration.Seconds:00}";
+    }
+
     private void AddPeriodicWarnings(ICollection<string> warnings)
     {
         foreach (var (name, times) in _eventTimes)
         {
+            if (!_settings.IncludeLeagueInDiagnosis &&
+                name.StartsWith("LoL", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
             if (times.Count < 4)
             {
                 continue;
@@ -431,11 +488,22 @@ internal sealed class DiagnosticSession
         }
 
         _lastLolSearchAt = DateTime.Now;
-        var endpoint = await Task.Run(FindLolEndpoint, cancellationToken);
-        if (endpoint is not null)
+        try
         {
-            _lolAddress = endpoint.Value.Address;
-            _lolPort = endpoint.Value.Port;
+            var endpoint = await Task.Run(FindLolEndpoint, cancellationToken);
+            if (endpoint is not null)
+            {
+                _lolAddress = endpoint.Value.Address;
+                _lolPort = endpoint.Value.Port;
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception or IOException)
+        {
+            Trace.TraceWarning($"No se pudo detectar el cliente de LoL; el monitoreo de red continúa: {exception.Message}");
         }
     }
 
@@ -480,13 +548,14 @@ internal sealed class DiagnosticSession
             return null;
         }
 
-        var output = netstat.StandardOutput.ReadToEnd();
+        var outputTask = netstat.StandardOutput.ReadToEndAsync();
         if (!netstat.WaitForExit(3000))
         {
             netstat.Kill();
             return null;
         }
 
+        var output = outputTask.GetAwaiter().GetResult();
         foreach (var line in output.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries))
         {
             var match = Regex.Match(line, @"^\s*TCP\s+\S+\s+(?<remote>\S+)\s+ESTABLISHED\s+(?<pid>\d+)", RegexOptions.IgnoreCase);
@@ -532,39 +601,57 @@ internal sealed class DiagnosticSession
                (bytes[0] & 0xFE) == 0xFC;
     }
 
-    private static (string Router, ConnectionInfo Connection) DetectConnection()
+    private static (string Router, ConnectionInfo Connection) DetectConnection(string? selectedInterfaceId)
     {
-        foreach (var network in NetworkInterface.GetAllNetworkInterfaces()
-                     .Where(item => item.OperationalStatus == OperationalStatus.Up))
+        NetworkInterface? network;
+        if (!string.IsNullOrWhiteSpace(selectedInterfaceId))
         {
-            var gateway = network.GetIPProperties().GatewayAddresses
-                .Select(item => item.Address)
-                .FirstOrDefault(address => address.AddressFamily == AddressFamily.InterNetwork &&
-                                           !address.Equals(IPAddress.Any));
-            if (gateway is null)
+            network = NetworkInterface.GetAllNetworkInterfaces()
+                .FirstOrDefault(item => item.Id == selectedInterfaceId && item.OperationalStatus == OperationalStatus.Up);
+            if (network is null)
             {
-                continue;
+                throw new InvalidOperationException("La interfaz de red seleccionada ya no está disponible. Elegí otra en Configuración.");
+            }
+        }
+        else
+        {
+            var destination = BitConverter.ToUInt32(IPAddress.Parse("1.1.1.1").GetAddressBytes());
+            var result = GetBestInterface(destination, out var bestInterfaceIndex);
+            if (result != 0)
+            {
+                throw new System.ComponentModel.Win32Exception((int)result, "No se pudo determinar la interfaz IPv4 que Windows usa para salir a Internet.");
             }
 
-            var isWifi = network.NetworkInterfaceType == NetworkInterfaceType.Wireless80211;
-            var wifi = isWifi ? ReadWifiDetails() : (Ssid: null, Signal: (int?)null);
-            var detail = network.Name;
-            if (isWifi)
-            {
-                if (!string.IsNullOrWhiteSpace(wifi.Ssid))
-                {
-                    detail = $"SSID: {wifi.Ssid}";
-                }
-                if (wifi.Signal.HasValue)
-                {
-                    detail += $" (señal: {wifi.Signal.Value}%)";
-                }
-            }
-
-            return (gateway.ToString(), new ConnectionInfo(isWifi ? "Wi-Fi" : "Ethernet/cable", detail, wifi.Signal));
+            network = NetworkInterface.GetAllNetworkInterfaces()
+                .FirstOrDefault(item => item.OperationalStatus == OperationalStatus.Up &&
+                                        item.GetIPProperties().GetIPv4Properties()?.Index == bestInterfaceIndex);
         }
 
-        throw new InvalidOperationException("No se pudo detectar una puerta de enlace IPv4. Conectá el equipo a una red y volvé a intentar.");
+        var gateway = network?.GetIPProperties().GatewayAddresses
+            .Select(item => item.Address)
+            .FirstOrDefault(address => address.AddressFamily == AddressFamily.InterNetwork &&
+                                       !address.Equals(IPAddress.Any));
+        if (network is null || gateway is null)
+        {
+            throw new InvalidOperationException("Windows identificó la interfaz de salida, pero no se pudo obtener su puerta de enlace IPv4.");
+        }
+
+        var isWifi = network.NetworkInterfaceType == NetworkInterfaceType.Wireless80211;
+        var wifi = isWifi ? ReadWifiDetails() : (Ssid: null, Signal: (int?)null);
+        var detail = network.Name;
+        if (isWifi)
+        {
+            if (!string.IsNullOrWhiteSpace(wifi.Ssid))
+            {
+                detail = $"SSID: {wifi.Ssid}";
+            }
+            if (wifi.Signal.HasValue)
+            {
+                detail += $" (señal: {wifi.Signal.Value}%)";
+            }
+        }
+
+        return (gateway.ToString(), new ConnectionInfo(isWifi ? "Wi-Fi" : "Ethernet/cable", detail, wifi.Signal));
     }
 
     private static (string? Ssid, int? Signal) ReadWifiDetails()
@@ -592,12 +679,16 @@ internal sealed class DiagnosticSession
             return string.Empty;
         }
 
-        var output = process.StandardOutput.ReadToEnd();
-        process.WaitForExit(2000);
-        return output;
+        var outputTask = process.StandardOutput.ReadToEndAsync();
+        if (!process.WaitForExit(2000))
+        {
+            process.Kill();
+        }
+
+        return outputTask.GetAwaiter().GetResult();
     }
 
-    private static async Task<string?> FindIspFirstHopAsync(string router, CancellationToken cancellationToken)
+    private static async Task<string?> FindIspFirstHopAsync(string router, string destination, CancellationToken cancellationToken)
     {
         using var ping = new Ping();
         for (var ttl = 2; ttl <= 6; ttl++)
@@ -605,7 +696,7 @@ internal sealed class DiagnosticSession
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                var reply = await ping.SendPingAsync(Cloudflare, TimeSpan.FromMilliseconds(800),
+                var reply = await ping.SendPingAsync(destination, TimeSpan.FromMilliseconds(800),
                     new byte[32], new PingOptions(ttl, true), cancellationToken);
                 if (reply.Status == IPStatus.TtlExpired && reply.Address is not null &&
                     !string.Equals(reply.Address.ToString(), router, StringComparison.OrdinalIgnoreCase))
