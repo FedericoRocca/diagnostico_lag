@@ -21,6 +21,7 @@ internal sealed class MainForm : Form
     private readonly Button _exportReportButton = new();
     private readonly Button _exportCsvButton = new();
     private readonly Button _settingsButton = new();
+    private readonly Icon _applicationIcon;
     private readonly string _logDirectory = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "DiagnosticoLag", "sesiones");
@@ -39,7 +40,8 @@ internal sealed class MainForm : Form
     public MainForm()
     {
         Text = "Diagnóstico de red para gaming";
-        Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application;
+        _applicationIcon = LoadApplicationIcon();
+        Icon = _applicationIcon;
         MinimumSize = new Size(980, 680);
         Size = new Size(1220, 850);
         StartPosition = FormStartPosition.CenterScreen;
@@ -60,6 +62,15 @@ internal sealed class MainForm : Form
         _timer.Tick += async (_, _) => await SampleOnceAsync();
         FormClosing += OnFormClosing;
         SetMonitoringControls(false, false);
+    }
+
+    private static Icon LoadApplicationIcon()
+    {
+        const string resourceName = "DiagnosticoLag.Assets.diagnostico-lag.ico";
+        using var stream = typeof(MainForm).Assembly.GetManifestResourceStream(resourceName)
+            ?? throw new InvalidOperationException($"No se encontró el recurso de icono de la aplicación: {resourceName}");
+        using var icon = new Icon(stream);
+        return (Icon)icon.Clone();
     }
 
     private void BuildInterface()
@@ -621,6 +632,17 @@ internal sealed class MainForm : Form
         {
             _samplingCancellation?.Dispose();
         }
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _timer.Dispose();
+            _applicationIcon.Dispose();
+        }
+
+        base.Dispose(disposing);
     }
 }
 

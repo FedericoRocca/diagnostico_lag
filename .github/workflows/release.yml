@@ -21,17 +21,25 @@ jobs:
           dotnet-version: 8.0.x
 
       - name: Publish Windows x64 application
-        run: >-
-          dotnet publish DiagnosticoLag/DiagnosticoLag.csproj
-          --configuration Release
-          --runtime win-x64
-          --self-contained true
-          -p:PublishSingleFile=true
-          -p:IncludeNativeLibrariesForSelfExtract=true
-          -p:EnableCompressionInSingleFile=true
-          -p:DebugType=None
-          -p:DebugSymbols=false
-          --output artifacts/publish
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $version = $env:RELEASE_TAG.TrimStart("v")
+          dotnet publish DiagnosticoLag/DiagnosticoLag.csproj `
+            --configuration Release `
+            --runtime win-x64 `
+            --self-contained true `
+            "-p:Version=$version" `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:EnableCompressionInSingleFile=true `
+            -p:DebugType=None `
+            -p:DebugSymbols=false `
+            --output artifacts/publish
+          if ($LASTEXITCODE -ne 0) {
+            throw "dotnet publish failed with exit code $LASTEXITCODE"
+          }
 
       - name: Package and create GitHub release
         shell: pwsh
@@ -46,6 +54,13 @@ jobs:
 
           $archive = "DiagnosticoLag-$env:RELEASE_TAG-win-x64.zip"
           Compress-Archive -Path "artifacts/publish/*" -DestinationPath $archive
-          gh release create $env:RELEASE_TAG $archive `
-            --title "Diagnóstico Lag $env:RELEASE_TAG" `
-            --generate-notes
+          $releaseArgs = @(
+            $env:RELEASE_TAG,
+            $archive,
+            "--title", "Diagnóstico Lag $env:RELEASE_TAG",
+            "--generate-notes"
+          )
+          if ($env:RELEASE_TAG -match "^v0\.") {
+            $releaseArgs += "--prerelease"
+          }
+          gh release create @releaseArgs
