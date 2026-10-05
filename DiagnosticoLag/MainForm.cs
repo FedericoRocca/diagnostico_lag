@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Drawing.Drawing2D;
 using System.Globalization;
+using System.Reflection;
 using System.Text;
 
 namespace DiagnosticoLag;
@@ -8,11 +9,11 @@ namespace DiagnosticoLag;
 internal sealed class MainForm : Form
 {
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 1000 };
-    private readonly DataGridView _grid = new();
+    private readonly BufferedDataGridView _grid = new();
     private readonly LatencyChart _chart = new();
-    private readonly Label _status = new();
-    private readonly Label _diagnosis = new();
-    private readonly RichTextBox _details = new();
+    private readonly BufferedLabel _status = new();
+    private readonly BufferedLabel _diagnosis = new();
+    private readonly BufferedRichTextBox _details = new();
     private readonly Button _startButton = new();
     private readonly Button _pauseButton = new();
     private readonly Button _resumeButton = new();
@@ -73,9 +74,17 @@ internal sealed class MainForm : Form
         return (Icon)icon.Clone();
     }
 
+    private static string ApplicationName =>
+        typeof(MainForm).Assembly.GetCustomAttribute<System.Reflection.AssemblyProductAttribute>()?.Product
+        ?? throw new InvalidOperationException("No se pudo determinar el nombre de la aplicación compilada.");
+
+    private static Version ApplicationVersion =>
+        typeof(MainForm).Assembly.GetName().Version
+        ?? throw new InvalidOperationException("No se pudo determinar la versión compilada de la aplicación.");
+
     private void BuildInterface()
     {
-        var layout = new TableLayoutPanel
+        var layout = new BufferedTableLayoutPanel
         {
             Dock = DockStyle.Fill,
             Padding = new Padding(18),
@@ -92,20 +101,48 @@ internal sealed class MainForm : Form
         var heading = new Panel { Dock = DockStyle.Fill };
         var title = new Label
         {
-            Text = "DIAGNÓSTICO DE RED",
+            Text = $"{ApplicationName} · Beta {ApplicationVersion.ToString(3)}",
             Font = new Font("Segoe UI Semibold", 15F, FontStyle.Bold),
             ForeColor = Color.FromArgb(24, 39, 61),
             AutoSize = true,
-            Location = new Point(0, 2)
+            Location = new Point(0, 0)
         };
+        var subtitle = new Label
+        {
+            Text = "DIAGNÓSTICO DE RED",
+            Font = new Font("Segoe UI", 8.5F),
+            ForeColor = Color.FromArgb(112, 126, 145),
+            AutoSize = true,
+            Location = new Point(1, 34)
+        };
+        var helpButton = new Button
+        {
+            Text = "?",
+            Size = new Size(28, 28),
+            FlatStyle = FlatStyle.Flat,
+            Font = new Font("Segoe UI Semibold", 11F, FontStyle.Bold),
+            ForeColor = Color.FromArgb(57, 91, 145),
+            BackColor = Color.White,
+            Anchor = AnchorStyles.Top | AnchorStyles.Right,
+            Location = new Point(heading.ClientSize.Width - 32, 15),
+            Cursor = Cursors.Hand
+        };
+        helpButton.FlatAppearance.BorderColor = Color.FromArgb(200, 211, 224);
+        helpButton.FlatAppearance.BorderSize = 1;
         _status.Text = "Listo para iniciar";
         _status.AutoSize = true;
         _status.ForeColor = Color.FromArgb(88, 104, 126);
         _status.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        _status.Location = new Point(heading.Width - 300, 12);
-        heading.Resize += (_, _) => _status.Location = new Point(heading.ClientSize.Width - _status.Width - 8, 13);
+        _status.Location = new Point(heading.Width - _status.Width - helpButton.Width - 20, 20);
+        heading.Resize += (_, _) =>
+        {
+            helpButton.Location = new Point(heading.ClientSize.Width - helpButton.Width - 2, 15);
+            _status.Location = new Point(heading.ClientSize.Width - _status.Width - helpButton.Width - 14, 20);
+        };
         heading.Controls.Add(title);
+        heading.Controls.Add(subtitle);
         heading.Controls.Add(_status);
+        heading.Controls.Add(helpButton);
         layout.Controls.Add(heading, 0, 0);
 
         ConfigureGrid();
@@ -145,7 +182,7 @@ internal sealed class MainForm : Form
             _exportReportButton, _exportCsvButton, _settingsButton, openLogButton]);
         layout.Controls.Add(toolbar, 0, 3);
 
-        var bottom = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = new Padding(0, 6, 0, 0) };
+        var bottom = new BufferedTableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = new Padding(0, 6, 0, 0) };
         bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 43));
         bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 57));
         _diagnosis.Dock = DockStyle.Fill;
@@ -173,6 +210,17 @@ internal sealed class MainForm : Form
         _exportCsvButton.Click += (_, _) => ExportCsv();
         _settingsButton.Click += (_, _) => ShowSettings();
         openLogButton.Click += (_, _) => OpenLog();
+        helpButton.Click += (_, _) => ShowAbout();
+    }
+
+    private void ShowAbout()
+    {
+        var message = $"{ApplicationName} · Beta {ApplicationVersion.ToString(3)}{Environment.NewLine}{Environment.NewLine}" +
+                      "Herramienta de diagnóstico de red para gaming. Mide la latencia y la pérdida de paquetes " +
+                      "hacia el router y destinos de Internet, muestra su evolución en tiempo real y ofrece " +
+                      $"estadísticas y un diagnóstico para ayudar a detectar problemas de conexión.{Environment.NewLine}{Environment.NewLine}" +
+                      "Las sesiones pueden pausarse, generar informes y exportarse a archivos de texto o CSV.";
+        MessageBox.Show(this, message, $"Acerca de {ApplicationName}", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     private void ConfigureGrid()
@@ -340,44 +388,81 @@ internal sealed class MainForm : Form
 
     private void UpdateDashboard(MonitorSnapshot snapshot)
     {
-        _grid.Rows.Clear();
-        foreach (var target in snapshot.Targets)
+        _grid.SuspendLayout();
+        try
         {
-            var stats = target.Statistics;
-            var row = _grid.Rows.Add(
-                target.Target.Name,
-                stats.Samples,
-                stats.Average.ToString("F1"),
-                stats.Median,
-                stats.P95,
-                stats.P99,
-                stats.Maximum,
-                stats.Jitter.ToString("F1"),
-                stats.Spikes80 + stats.Spikes120,
-                $"{stats.LossPercent:F1}%");
-            _grid.Rows[row].Cells["loss"].Style.ForeColor = stats.LossPercent >= 5
-                ? Color.Firebrick
-                : stats.LossPercent > 0.5 ? Color.DarkGoldenrod : Color.DarkGreen;
+            while (_grid.Rows.Count < snapshot.Targets.Count)
+            {
+                _grid.Rows.Add();
+            }
+
+            while (_grid.Rows.Count > snapshot.Targets.Count)
+            {
+                _grid.Rows.RemoveAt(_grid.Rows.Count - 1);
+            }
+
+            for (var index = 0; index < snapshot.Targets.Count; index++)
+            {
+                var target = snapshot.Targets[index];
+                var stats = target.Statistics;
+                var row = _grid.Rows[index];
+                row.Cells["target"].Value = target.Target.Name;
+                row.Cells["samples"].Value = stats.Samples;
+                row.Cells["average"].Value = stats.Average.ToString("F1");
+                row.Cells["median"].Value = stats.Median;
+                row.Cells["p95"].Value = stats.P95;
+                row.Cells["p99"].Value = stats.P99;
+                row.Cells["maximum"].Value = stats.Maximum;
+                row.Cells["jitter"].Value = stats.Jitter.ToString("F1");
+                row.Cells["spikes"].Value = stats.Spikes80 + stats.Spikes120;
+                row.Cells["loss"].Value = $"{stats.LossPercent:F1}%";
+                var lossColor = stats.LossPercent >= 5
+                    ? Color.Firebrick
+                    : stats.LossPercent > 0.5 ? Color.DarkGoldenrod : Color.DarkGreen;
+                if (row.Cells["loss"].Style.ForeColor != lossColor)
+                {
+                    row.Cells["loss"].Style.ForeColor = lossColor;
+                }
+            }
+        }
+        finally
+        {
+            _grid.ResumeLayout();
         }
 
-        _grid.Columns["loss"]!.HeaderText = snapshot.Targets.Any(target => target.Target.Type == ProbeType.Tcp)
+        var lossHeader = snapshot.Targets.Any(target => target.Target.Type == ProbeType.Tcp)
             ? "Pérdida / fallos TCP"
             : "Pérdida";
+        if (_grid.Columns["loss"]!.HeaderText != lossHeader)
+        {
+            _grid.Columns["loss"]!.HeaderText = lossHeader;
+        }
+
         _chart.AddSample(DateTime.Now, snapshot.LastMeasurements);
         var diagnosis = snapshot.Diagnosis;
-        _diagnosis.Text = $"{diagnosis.Title}{Environment.NewLine}{diagnosis.Explanation}" +
-                          (diagnosis.Reasons.Count == 0 ? "" : $"{Environment.NewLine}{Environment.NewLine}• {string.Join($"{Environment.NewLine}• ", diagnosis.Reasons.Take(4))}");
-        _diagnosis.ForeColor = diagnosis.Level switch
+        var diagnosisText = $"{diagnosis.Title}{Environment.NewLine}{diagnosis.Explanation}" +
+                            (diagnosis.Reasons.Count == 0 ? "" : $"{Environment.NewLine}{Environment.NewLine}• {string.Join($"{Environment.NewLine}• ", diagnosis.Reasons.Take(4))}");
+        if (_diagnosis.Text != diagnosisText)
+        {
+            _diagnosis.Text = diagnosisText;
+        }
+
+        var diagnosisColor = diagnosis.Level switch
         {
             "PROBLEMA" => Color.Firebrick,
             "ATENCION" => Color.DarkGoldenrod,
             "DATOS_INSUFICIENTES" => Color.FromArgb(57, 91, 145),
             _ => Color.DarkGreen
         };
-        _details.Text = $"Duración: {FormatDuration(snapshot.Duration)} | Línea base: " +
-                        (snapshot.SamplesUntilBaseline == 0 ? "lista" : $"en {snapshot.SamplesUntilBaseline} muestras") +
-                        $"{Environment.NewLine}{Environment.NewLine}Eventos recientes{Environment.NewLine}" +
-                        (snapshot.RecentEvents.Count == 0 ? "Sin pérdidas ni picos ≥120 ms." : string.Join(Environment.NewLine, snapshot.RecentEvents.TakeLast(10)));
+        if (_diagnosis.ForeColor != diagnosisColor)
+        {
+            _diagnosis.ForeColor = diagnosisColor;
+        }
+        _details.SetTextWithoutFlicker(
+            $"Duración: {FormatDuration(snapshot.Duration)} | Línea base: " +
+            (snapshot.SamplesUntilBaseline == 0 ? "lista" : $"en {snapshot.SamplesUntilBaseline} muestras") +
+            $"{Environment.NewLine}{Environment.NewLine}Eventos recientes{Environment.NewLine}" +
+            (snapshot.RecentEvents.Count == 0 ? "Sin pérdidas ni picos ≥120 ms." : string.Join(Environment.NewLine, snapshot.RecentEvents.TakeLast(10))));
     }
 
     private static string FormatDuration(TimeSpan duration)
@@ -644,6 +729,76 @@ internal sealed class MainForm : Form
 
         base.Dispose(disposing);
     }
+}
+
+internal sealed class BufferedDataGridView : DataGridView
+{
+    public BufferedDataGridView()
+    {
+        DoubleBuffered = true;
+    }
+}
+
+internal sealed class BufferedLabel : Label
+{
+    public BufferedLabel()
+    {
+        DoubleBuffered = true;
+    }
+}
+
+internal sealed class BufferedTableLayoutPanel : TableLayoutPanel
+{
+    public BufferedTableLayoutPanel()
+    {
+        DoubleBuffered = true;
+    }
+}
+
+internal sealed class BufferedRichTextBox : RichTextBox
+{
+    private const int WmSetRedraw = 0x000B;
+    private const int EmGetFirstVisibleLine = 0x00CE;
+    private const int EmLineScroll = 0x00B6;
+
+    public BufferedRichTextBox()
+    {
+        DoubleBuffered = true;
+    }
+
+    public void SetTextWithoutFlicker(string text)
+    {
+        if (Text == text)
+        {
+            return;
+        }
+
+        if (!IsHandleCreated)
+        {
+            Text = text;
+            return;
+        }
+
+        var selectionStart = SelectionStart;
+        var selectionLength = SelectionLength;
+        var firstVisibleLine = SendMessage(Handle, EmGetFirstVisibleLine, IntPtr.Zero, IntPtr.Zero).ToInt32();
+        SendMessage(Handle, WmSetRedraw, IntPtr.Zero, IntPtr.Zero);
+        try
+        {
+            Text = text;
+            Select(Math.Min(selectionStart, TextLength), Math.Min(selectionLength, Math.Max(0, TextLength - selectionStart)));
+            var currentFirstVisibleLine = SendMessage(Handle, EmGetFirstVisibleLine, IntPtr.Zero, IntPtr.Zero).ToInt32();
+            SendMessage(Handle, EmLineScroll, IntPtr.Zero, new IntPtr(firstVisibleLine - currentFirstVisibleLine));
+        }
+        finally
+        {
+            SendMessage(Handle, WmSetRedraw, new IntPtr(1), IntPtr.Zero);
+            Invalidate();
+        }
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr hWnd, int message, IntPtr wParam, IntPtr lParam);
 }
 
 internal sealed class ReportForm : Form
