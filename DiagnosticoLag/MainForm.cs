@@ -23,9 +23,6 @@ internal sealed class MainForm : Form
     private readonly Button _exportCsvButton = new();
     private readonly Button _settingsButton = new();
     private readonly Icon _applicationIcon;
-    private readonly string _logDirectory = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "DiagnosticoLag", "sesiones");
     private DiagnosticSession? _session;
     private DiagnosticSettings _settings = DiagnosticSettings.Default;
     private CancellationTokenSource? _samplingCancellation;
@@ -99,6 +96,8 @@ internal sealed class MainForm : Form
         Controls.Add(layout);
 
         var heading = new Panel { Dock = DockStyle.Fill };
+        ConfigureButton(_settingsButton, "Configuración", Color.FromArgb(78, 96, 120));
+        _settingsButton.Height = 34;
         var title = new Label
         {
             Text = $"{ApplicationName} · Beta {ApplicationVersion.ToString(3)}",
@@ -133,16 +132,21 @@ internal sealed class MainForm : Form
         _status.AutoSize = true;
         _status.ForeColor = Color.FromArgb(88, 104, 126);
         _status.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        _status.Location = new Point(heading.Width - _status.Width - helpButton.Width - 20, 20);
-        heading.Resize += (_, _) =>
+        void LayoutHeaderActions()
         {
             helpButton.Location = new Point(heading.ClientSize.Width - helpButton.Width - 2, 15);
-            _status.Location = new Point(heading.ClientSize.Width - _status.Width - helpButton.Width - 14, 20);
-        };
+            _settingsButton.Location = new Point(helpButton.Left - _settingsButton.Width - 8, 12);
+            _status.Location = new Point(_settingsButton.Left - _status.Width - 12, 20);
+        }
+        heading.Resize += (_, _) => LayoutHeaderActions();
+        _status.SizeChanged += (_, _) => LayoutHeaderActions();
+        _settingsButton.SizeChanged += (_, _) => LayoutHeaderActions();
         heading.Controls.Add(title);
         heading.Controls.Add(subtitle);
         heading.Controls.Add(_status);
+        heading.Controls.Add(_settingsButton);
         heading.Controls.Add(helpButton);
+        LayoutHeaderActions();
         layout.Controls.Add(heading, 0, 0);
 
         ConfigureGrid();
@@ -173,13 +177,9 @@ internal sealed class MainForm : Form
         _exportCsvButton.AutoSize = true;
         _exportCsvButton.Height = 34;
         _exportCsvButton.Margin = new Padding(0, 0, 8, 0);
-        _settingsButton.Text = "Configuración";
-        _settingsButton.AutoSize = true;
-        _settingsButton.Height = 34;
-        _settingsButton.Margin = new Padding(0, 0, 8, 0);
         var openLogButton = new Button { Text = "Carpeta de sesiones", AutoSize = true, Height = 34, Margin = new Padding(0, 0, 0, 0) };
         toolbar.Controls.AddRange([_startButton, _pauseButton, _resumeButton, _finishButton, _reportButton,
-            _exportReportButton, _exportCsvButton, _settingsButton, openLogButton]);
+            _exportReportButton, _exportCsvButton, openLogButton]);
         layout.Controls.Add(toolbar, 0, 3);
 
         var bottom = new BufferedTableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = new Padding(0, 6, 0, 0) };
@@ -280,10 +280,11 @@ internal sealed class MainForm : Form
         try
         {
             _session = await DiagnosticSession.CreateAsync(_settings, _samplingCancellation.Token);
-            Directory.CreateDirectory(_logDirectory);
+            Directory.CreateDirectory(_settings.LogDirectory);
+            Directory.CreateDirectory(_settings.CsvDirectory);
             var sessionName = $"sesion_{_session.StartedAt:yyyyMMdd_HHmmss_fff}";
-            _sessionLogPath = Path.Combine(_logDirectory, $"{sessionName}.txt");
-            _sessionCsvPath = Path.Combine(_logDirectory, $"{sessionName}.csv");
+            _sessionLogPath = Path.Combine(_settings.LogDirectory, $"{sessionName}.txt");
+            _sessionCsvPath = Path.Combine(_settings.CsvDirectory, $"{sessionName}.csv");
             _timer.Interval = _settings.SampleIntervalSeconds * 1000;
             _grid.Rows.Clear();
             _chart.StartSession(_session.StartedAt);
@@ -438,7 +439,7 @@ internal sealed class MainForm : Form
             _grid.Columns["loss"]!.HeaderText = lossHeader;
         }
 
-        _chart.AddSample(DateTime.Now, snapshot.LastMeasurements);
+        _chart.AddSample(DateTime.Now, snapshot.LastMeasurements, snapshot.Targets);
         var diagnosis = snapshot.Diagnosis;
         var diagnosisText = $"{diagnosis.Title}{Environment.NewLine}{diagnosis.Explanation}" +
                             (diagnosis.Reasons.Count == 0 ? "" : $"{Environment.NewLine}{Environment.NewLine}• {string.Join($"{Environment.NewLine}• ", diagnosis.Reasons.Take(4))}");
@@ -458,10 +459,16 @@ internal sealed class MainForm : Form
         {
             _diagnosis.ForeColor = diagnosisColor;
         }
+        var enabledProfiles = _settings.GameProfiles.Where(profile => profile.Enabled).ToArray();
+        var gameStatus = enabledProfiles.Length == 0
+            ? "Juegos: sin perfiles activados."
+            : snapshot.ActiveGameEndpoints.Count == 0
+                ? $"Juegos: esperando conexiones TCP de {string.Join(", ", enabledProfiles.Select(profile => profile.Name))}."
+                : $"Conexiones observadas: {string.Join(", ", snapshot.ActiveGameEndpoints.Select(endpoint => $"{endpoint.ProfileName} ({endpoint.Address}:{endpoint.Port})"))}.";
         _details.SetTextWithoutFlicker(
             $"Duración: {FormatDuration(snapshot.Duration)} | Línea base: " +
             (snapshot.SamplesUntilBaseline == 0 ? "lista" : $"en {snapshot.SamplesUntilBaseline} muestras") +
-            $"{Environment.NewLine}{Environment.NewLine}Eventos recientes{Environment.NewLine}" +
+            $"{Environment.NewLine}{gameStatus}{Environment.NewLine}{Environment.NewLine}Eventos recientes{Environment.NewLine}" +
             (snapshot.RecentEvents.Count == 0 ? "Sin pérdidas ni picos ≥120 ms." : string.Join(Environment.NewLine, snapshot.RecentEvents.TakeLast(10))));
     }
 
@@ -547,10 +554,10 @@ internal sealed class MainForm : Form
     {
         try
         {
-            Directory.CreateDirectory(_logDirectory);
-            Process.Start(new ProcessStartInfo { FileName = _logDirectory, UseShellExecute = true });
+            Directory.CreateDirectory(_settings.LogDirectory);
+            Process.Start(new ProcessStartInfo { FileName = _settings.LogDirectory, UseShellExecute = true });
         }
-        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
+        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception or IOException or UnauthorizedAccessException)
         {
             MessageBox.Show(this, $"No se pudo abrir el registro:{Environment.NewLine}{exception.Message}",
                 "Error al abrir el registro", MessageBoxButtons.OK, MessageBoxIcon.Error);
@@ -603,16 +610,21 @@ internal sealed class MainForm : Form
 
     private static string FormatCsv(MonitorSnapshot snapshot)
     {
-        return string.Join(Environment.NewLine, snapshot.Targets.Select(target =>
+        return string.Join(Environment.NewLine, snapshot.Targets
+            .Where(target => snapshot.LastMeasurements.ContainsKey(target.Target.Key))
+            .Select(target =>
         {
             var value = snapshot.LastMeasurements[target.Target.Key];
             var result = value < 0 ? "sin respuesta" : "correcto";
             return string.Join(",",
                 CsvField(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture)),
                 CsvField(target.Target.Name),
-                CsvField(target.Target.Type.ToString()),
+                CsvField(target.Target.GameProfileId is null
+                    ? target.Target.Type.ToString()
+                    : "ICMP (referencia de ruta, no ping real de juego)"),
                 CsvField(target.Target.Address),
-                target.Target.Type == ProbeType.Tcp ? target.Target.Port.ToString(CultureInfo.InvariantCulture) : "",
+                target.Target.ObservedPort?.ToString(CultureInfo.InvariantCulture) ??
+                (target.Target.Type == ProbeType.Tcp ? target.Target.Port.ToString(CultureInfo.InvariantCulture) : ""),
                 value < 0 ? "" : value.ToString(CultureInfo.InvariantCulture),
                 CsvField(result));
         }));
@@ -645,7 +657,8 @@ internal sealed class MainForm : Form
         using var dialog = new SaveFileDialog
         {
             Filter = "Informe de texto (*.txt)|*.txt",
-            FileName = $"diagnostico_{DateTime.Now:yyyyMMdd_HHmmss}.txt"
+            FileName = $"diagnostico_{DateTime.Now:yyyyMMdd_HHmmss}.txt",
+            InitialDirectory = _settings.LogDirectory
         };
         if (dialog.ShowDialog(this) != DialogResult.OK)
         {
@@ -674,7 +687,8 @@ internal sealed class MainForm : Form
         using var dialog = new SaveFileDialog
         {
             Filter = "Datos CSV (*.csv)|*.csv",
-            FileName = Path.GetFileName(_sessionCsvPath)
+            FileName = Path.GetFileName(_sessionCsvPath),
+            InitialDirectory = _settings.CsvDirectory
         };
         if (dialog.ShowDialog(this) != DialogResult.OK)
         {
@@ -875,27 +889,58 @@ internal sealed class LatencyChart : Control
         };
     }
 
+    private readonly HashSet<string> _gameSeriesKeys = new(StringComparer.Ordinal);
+
     public void StartSession(DateTime startedAt)
     {
-        foreach (var values in _series.Values)
+        foreach (var values in _series.Where(item => !IsGameSeries(item.Key)).Select(item => item.Value))
         {
             values.Clear();
         }
 
+        foreach (var key in _gameSeriesKeys)
+        {
+            _series.Remove(key);
+            _labels.Remove(key);
+        }
+
         _events.Clear();
         _sessionStartedAt = startedAt;
+        _gameSeriesKeys.Clear();
         _viewDuration = null;
         _lastHoverText = null;
         _hoverTip.Hide(this);
         Invalidate();
     }
 
-    public void AddSample(DateTime timestamp, IReadOnlyDictionary<string, int> measurements)
+    public void AddSample(
+        DateTime timestamp,
+        IReadOnlyDictionary<string, int> measurements,
+        IReadOnlyList<TargetSnapshot> targets)
     {
-        foreach (var key in _series.Keys)
+        foreach (var target in targets.Where(item => item.Target.GameProfileId is not null))
+        {
+            var key = target.Target.Key;
+            if (!_series.ContainsKey(key))
+            {
+                _series.Add(key, new List<SamplePoint>());
+                var hue = (int)((uint)StringComparer.Ordinal.GetHashCode(target.Target.GameProfileId!) % 360);
+                _labels.Add(key, (target.Target.Name, ColorFromHue(hue)));
+            }
+            else
+            {
+                var label = _labels[key];
+                _labels[key] = (target.Target.Name, label.Color);
+            }
+
+            _gameSeriesKeys.Add(key);
+        }
+
+        foreach (var key in measurements.Keys.Where(_series.ContainsKey))
         {
             var values = _series[key];
-            var value = measurements.TryGetValue(key, out var measured) && measured >= 0 ? measured : (int?)null;
+            var measured = measurements[key];
+            var value = measured >= 0 ? measured : (int?)null;
             values.Add(new SamplePoint(timestamp, value));
             if (value is null || value >= 120)
             {
@@ -950,7 +995,7 @@ internal sealed class LatencyChart : Control
         DrawTimeAxis(graphics, plot, viewStart, now, durationSeconds, gridPen, textBrush, font);
         graphics.DrawRectangle(borderPen, plot);
         var legendX = plot.Left + 6;
-        foreach (var (key, label) in _labels)
+        foreach (var (key, label) in _labels.Where(item => IsSeriesEnabled(item.Key)))
         {
             using var legendBrush = new SolidBrush(label.Color);
             graphics.FillEllipse(legendBrush, legendX, 26, 8, 8);
@@ -1070,7 +1115,7 @@ internal sealed class LatencyChart : Control
         var closestDistance = 12d;
         string? hoverText = null;
 
-        foreach (var (key, samples) in _series)
+        foreach (var (key, samples) in _series.Where(item => IsSeriesEnabled(item.Key)))
         {
             if (samples.Count == 0)
             {
@@ -1164,7 +1209,7 @@ internal sealed class LatencyChart : Control
 
     private int GetLatencyScale()
     {
-        var maximum = _series.Values.SelectMany(values => values)
+        var maximum = _series.Where(item => IsSeriesEnabled(item.Key)).SelectMany(item => item.Value)
             .Where(point => point.Value.HasValue)
             .Select(point => point.Value!.Value)
             .DefaultIfEmpty(0)
@@ -1177,6 +1222,38 @@ internal sealed class LatencyChart : Control
         var magnitude = Math.Pow(10, Math.Floor(Math.Log10(maximum / 4d)));
         var step = Math.Ceiling(maximum / (magnitude * 4)) * magnitude;
         return Math.Max(200, (int)(step * 4));
+    }
+
+    private bool IsSeriesEnabled(string key) =>
+        key is "router" or "cloudflare-icmp" or "google-icmp" || _gameSeriesKeys.Contains(key);
+
+    private static bool IsGameSeries(string key) =>
+        key is not ("router" or "cloudflare-icmp" or "google-icmp");
+
+    private static Color ColorFromHue(int hue)
+    {
+        var color = ColorFromHsv(hue, 0.55, 0.68);
+        return Color.FromArgb(color.R, color.G, color.B);
+    }
+
+    private static Color ColorFromHsv(int hue, double saturation, double value)
+    {
+        var chroma = value * saturation;
+        var secondary = chroma * (1 - Math.Abs(hue / 60d % 2 - 1));
+        var offset = value - chroma;
+        var (red, green, blue) = hue switch
+        {
+            < 60 => (chroma, secondary, 0d),
+            < 120 => (secondary, chroma, 0d),
+            < 180 => (0d, chroma, secondary),
+            < 240 => (0d, secondary, chroma),
+            < 300 => (secondary, 0d, chroma),
+            _ => (chroma, 0d, secondary)
+        };
+        return Color.FromArgb(
+            (int)((red + offset) * 255),
+            (int)((green + offset) * 255),
+            (int)((blue + offset) * 255));
     }
 
     private static int FindFirstAtOrAfter(IReadOnlyList<SamplePoint> samples, DateTime timestamp)

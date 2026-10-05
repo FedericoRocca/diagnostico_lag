@@ -60,7 +60,4 @@ jobs:
             "--title", "Diagnóstico Lag $env:RELEASE_TAG",
             "--generate-notes"
           )
-          if ($env:RELEASE_TAG -match "^v0\.") {
-            $releaseArgs += "--prerelease"
-          }
           gh release create @releaseArgs

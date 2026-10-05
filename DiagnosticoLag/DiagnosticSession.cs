@@ -8,9 +8,19 @@ using System.Text.RegularExpressions;
 namespace DiagnosticoLag;
 
 internal sealed record ConnectionInfo(string Type, string Detail, int? WifiSignal);
-internal sealed record ProbeTarget(string Key, string Name, string Address, ProbeType Type, int Port = 443);
+internal sealed record ProbeTarget(
+    string Key,
+    string Name,
+    string Address,
+    ProbeType Type,
+    int Port = 443,
+    string? GameProfileId = null,
+    string? GameProfileName = null,
+    string? ProcessName = null,
+    int? ObservedPort = null);
 internal enum ProbeType { Icmp, Tcp }
 internal sealed record TargetSnapshot(ProbeTarget Target, StatSummary Statistics);
+internal sealed record GameObservedEndpoint(string ProfileId, string ProfileName, string ProcessName, string Address, int Port, string ProbeKey);
 internal sealed record DiagnosticResult(string Level, string Title, string Explanation, string Recommendation, IReadOnlyList<string> Reasons);
 internal sealed record MonitorSnapshot(
     DateTime StartedAt,
@@ -21,13 +31,18 @@ internal sealed record MonitorSnapshot(
     ConnectionInfo Connection,
     string RouterAddress,
     string? IspAddress,
-    string? LolAddress,
-    int? LolPort,
+    IReadOnlyList<GameObservedEndpoint> GameEndpoints,
+    IReadOnlyList<GameObservedEndpoint> ActiveGameEndpoints,
     DiagnosticResult Diagnosis,
     int SamplesUntilBaseline);
 
 internal sealed class DiagnosticSession
 {
+    private const int MaximumGameProfiles = 8;
+    private const int MaximumProcessNamesPerProfile = 8;
+    private const int MaximumActiveEndpointsPerProfile = 2;
+    private const int MaximumObservedEndpointsPerProfile = 8;
+
     private readonly DiagnosticSettings _settings;
     private readonly List<ProbeTarget> _targets;
     private readonly Dictionary<string, LatencyStatistics> _statistics = new(StringComparer.Ordinal);
@@ -39,9 +54,9 @@ internal sealed class DiagnosticSession
     private DateTime _lastPeriodicLog = DateTime.Now;
     private int _samples;
     private Baseline? _baseline;
-    private string? _lolAddress;
-    private int? _lolPort;
-    private DateTime _lastLolSearchAt = DateTime.MinValue;
+    private readonly Dictionary<string, ProbeTarget> _gameTargets = new(StringComparer.Ordinal);
+    private IReadOnlyList<GameObservedEndpoint> _activeGameEndpoints = Array.Empty<GameObservedEndpoint>();
+    private DateTime _lastGameScanAt = DateTime.MinValue;
 
     [DllImport("iphlpapi.dll", ExactSpelling = true)]
     private static extern uint GetBestInterface(uint destinationAddress, out uint interfaceIndex);
@@ -89,25 +104,20 @@ internal sealed class DiagnosticSession
 
     public async Task<MonitorSnapshot> SampleAsync(CancellationToken cancellationToken)
     {
-        await TryDetectLolAsync(cancellationToken);
-
-        if (_lolAddress is not null && _lolPort.HasValue && !_targets.Any(target => target.Key == "lol-icmp"))
-        {
-            _targets.Add(new ProbeTarget("lol-icmp", "LoL (ICMP, aproximado)", _lolAddress, ProbeType.Icmp));
-            _targets.Add(new ProbeTarget("lol-tcp", "LoL (TCP, aproximado)", _lolAddress, ProbeType.Tcp, _lolPort.Value));
-            _statistics.Add("lol-icmp", new LatencyStatistics());
-            _statistics.Add("lol-tcp", new LatencyStatistics());
-            _recentMeasurements.Add("lol-icmp", new Queue<int>());
-            _recentMeasurements.Add("lol-tcp", new Queue<int>());
-        }
+        await RefreshGameEndpointsAsync(cancellationToken);
 
         var timestamp = DateTime.Now;
-        var measurements = await Task.WhenAll(_targets.Select(target => MeasureAsync(target, cancellationToken)));
+        var activeGameTargets = _activeGameEndpoints
+            .Select(endpoint => _gameTargets[endpoint.ProbeKey])
+            .DistinctBy(target => target.Key)
+            .ToArray();
+        var targetsToMeasure = _targets.Concat(activeGameTargets).ToArray();
+        var measurements = await Task.WhenAll(targetsToMeasure.Select(target => MeasureAsync(target, cancellationToken)));
         _samples++;
         var lastMeasurements = new Dictionary<string, int>(StringComparer.Ordinal);
-        for (var index = 0; index < _targets.Count; index++)
+        for (var index = 0; index < targetsToMeasure.Length; index++)
         {
-            var target = _targets[index];
+            var target = targetsToMeasure[index];
             var value = measurements[index];
             _statistics[target.Key].Add(value);
             var recent = _recentMeasurements[target.Key];
@@ -159,7 +169,7 @@ internal sealed class DiagnosticSession
             $"Conexión: {Connection.Type} ({Connection.Detail})",
             $"Router: {RouterAddress} | ISP (primer salto): {IspAddress ?? "no detectado"}",
             $"Destinos externos: { _settings.CloudflareAddress} | {_settings.GoogleAddress}",
-            $"LoL (destino aproximado): {(_lolAddress is null ? "no detectado" : $"{_lolAddress}:{_lolPort}")}",
+            "Las mediciones de juegos son referencias ICMP aproximadas a endpoints TCP observados del proceso; no representan el ping real de la partida.",
             _baseline is null
                 ? $"Línea base: pendiente ({Math.Max(0, 60 - _samples)} muestras restantes)"
                 : $"Línea base inicial (primeros 60 sondeos): router {_baseline.Router.Average} ms / jitter {_baseline.Router.Jitter} ms; destino 1 {_baseline.Cloudflare.Average} ms; destino 2 {_baseline.Google.Average} ms",
@@ -170,12 +180,22 @@ internal sealed class DiagnosticSession
         {
             var s = target.Statistics;
             var lossLabel = target.Target.Type == ProbeType.Tcp ? "Fallos" : "Pérdida";
-            var endpoint = target.Target.Type == ProbeType.Tcp
-                ? $"{target.Target.Address}:{target.Target.Port}"
-                : target.Target.Address;
+            var endpoint = target.Target.ObservedPort is int observedPort
+                ? $"{target.Target.Address}:{observedPort} (TCP observado; referencia ICMP)"
+                : target.Target.Type == ProbeType.Tcp
+                    ? $"{target.Target.Address}:{target.Target.Port}"
+                    : target.Target.Address;
             report.Add($"[{target.Target.Name} - {endpoint}] {s.Samples} muestras");
             report.Add($"  Promedio {s.Average} ms | Mediana {s.Median} ms | P95 {s.P95} ms | P99 {s.P99} ms | Máximo {s.Maximum} ms");
             report.Add($"  Jitter {s.Jitter} ms | Picos 80-119 ms: {s.Spikes80} | >=120 ms: {s.Spikes120} | {lossLabel}: {s.LossPercent}% ({s.Lost}/{s.Samples})");
+        }
+
+        if (snapshot.GameEndpoints.Count > 0)
+        {
+            report.Add("");
+            report.Add("CONEXIONES DE JUEGOS OBSERVADAS:");
+            report.AddRange(snapshot.GameEndpoints.Select(endpoint =>
+                $"  {endpoint.ProfileName}: {endpoint.Address}:{endpoint.Port} (proceso {endpoint.ProcessName}); la ruta ICMP es una referencia, no la latencia de la partida."));
         }
 
         report.Add("");
@@ -189,11 +209,11 @@ internal sealed class DiagnosticSession
 
         report.Add("");
         report.Add($"NOTA: se requieren al menos 30 muestras por destino para incluirlo en el diagnóstico. Se sondea cada {_settings.SampleIntervalSeconds} segundo(s).");
-        report.Add("NOTA: el primer salto del ISP es orientativo. El destino LoL detectado es una conexión TCP del cliente y no necesariamente el servidor UDP de la partida.");
+        report.Add("NOTA: el primer salto del ISP es orientativo. Los endpoints de juegos se observan en conexiones TCP de sus procesos y pueden ser auxiliares, no el servidor de partida.");
         report.Add("NOTA: ICMP puede estar filtrado o recibir menor prioridad; las mediciones TCP en el puerto 443 aportan una referencia distinta.");
-        if (!_settings.IncludeLeagueInDiagnosis)
+        if (snapshot.GameEndpoints.Count > 0)
         {
-            report.Add("NOTA: las mediciones aproximadas de League se muestran, pero no participan en el diagnóstico automático.");
+            report.Add("NOTA: la latencia ICMP a un endpoint de juego es una referencia aproximada de ruta, no el ping real del juego; muchos juegos usan UDP o protocolos propios.");
         }
         if (snapshot.RecentEvents.Count > 0)
         {
@@ -208,7 +228,7 @@ internal sealed class DiagnosticSession
 
     private MonitorSnapshot CreateSnapshot(TimeSpan duration, IReadOnlyDictionary<string, int> lastMeasurements)
     {
-        var targets = _targets
+        var targets = _targets.Concat(_gameTargets.Values)
             .Where(target => _statistics.ContainsKey(target.Key))
             .Select(target => new TargetSnapshot(target, Summary(target.Key)))
             .ToArray();
@@ -218,8 +238,17 @@ internal sealed class DiagnosticSession
             item => LatencyStatistics.FromSamples(item.Value),
             StringComparer.Ordinal);
         var diagnosis = Diagnose(lookup, recentLookup);
+        var gameEndpoints = _gameTargets.Values
+            .Select(target => new GameObservedEndpoint(
+                target.GameProfileId!,
+                target.GameProfileName!,
+                target.ProcessName!,
+                target.Address,
+                target.ObservedPort!.Value,
+                target.Key))
+            .ToArray();
         return new MonitorSnapshot(_startedAt, duration, targets, lastMeasurements, _recentEvents.ToArray(), Connection,
-            RouterAddress, IspAddress, _lolAddress, _lolPort, diagnosis, Math.Max(0, 60 - _samples));
+            RouterAddress, IspAddress, gameEndpoints, _activeGameEndpoints, diagnosis, Math.Max(0, 60 - _samples));
     }
 
     private StatSummary Summary(string key)
@@ -329,9 +358,17 @@ internal sealed class DiagnosticSession
         AddInternetDiagnosis("Destino 1", "cloudflare-icmp", "cloudflare-tcp", values, ispProblems, warnings);
         AddInternetDiagnosis("Destino 2", "google-icmp", "google-tcp", values, ispProblems, warnings);
 
-        if (_settings.IncludeLeagueInDiagnosis && _lolAddress is not null && values.ContainsKey("lol-icmp"))
+        foreach (var gameTarget in _gameTargets.Values)
         {
-            AddInternetDiagnosis($"LoL ({_lolAddress}, aproximado)", "lol-icmp", "lol-tcp", values, ispProblems, warnings);
+            if (!values.TryGetValue(gameTarget.Key, out var gameRoute) || gameRoute.Samples < 30)
+            {
+                continue;
+            }
+
+            if (gameRoute.LossPercent > 3 || gameRoute.Average > 150 || gameRoute.Jitter > 25 || HasFrequentSpikes(gameRoute))
+            {
+                warnings.Add($"{gameTarget.GameProfileName}: la referencia ICMP a {gameTarget.Address} presenta anomalías; esto no confirma problemas en el servidor ni mide el ping real de la partida.");
+            }
         }
 
         if (values.TryGetValue("isp", out var isp) && ispProblems.Count > 0 &&
@@ -440,12 +477,6 @@ internal sealed class DiagnosticSession
     {
         foreach (var (name, times) in _eventTimes)
         {
-            if (!_settings.IncludeLeagueInDiagnosis &&
-                name.StartsWith("LoL", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
             if (times.Count < 4)
             {
                 continue;
@@ -480,22 +511,56 @@ internal sealed class DiagnosticSession
 
     private sealed record Baseline(StatSummary Router, StatSummary Cloudflare, StatSummary Google);
 
-    private async Task TryDetectLolAsync(CancellationToken cancellationToken)
+    private async Task RefreshGameEndpointsAsync(CancellationToken cancellationToken)
     {
-        if (_lolAddress is not null || (DateTime.Now - _lastLolSearchAt).TotalSeconds < 15)
+        var enabledProfiles = _settings.GameProfiles.Where(profile => profile.Enabled).ToArray();
+        if (enabledProfiles.Length == 0)
+        {
+            _activeGameEndpoints = Array.Empty<GameObservedEndpoint>();
+            return;
+        }
+
+        if ((DateTime.Now - _lastGameScanAt).TotalSeconds < 5)
         {
             return;
         }
 
-        _lastLolSearchAt = DateTime.Now;
+        _lastGameScanAt = DateTime.Now;
+        _activeGameEndpoints = Array.Empty<GameObservedEndpoint>();
         try
         {
-            var endpoint = await Task.Run(FindLolEndpoint, cancellationToken);
-            if (endpoint is not null)
+            var endpoints = await Task.Run(() => FindGameEndpoints(enabledProfiles), cancellationToken);
+            var active = new List<GameObservedEndpoint>();
+            foreach (var endpoint in endpoints)
             {
-                _lolAddress = endpoint.Value.Address;
-                _lolPort = endpoint.Value.Port;
+                var key = $"game:{endpoint.ProfileId}:{endpoint.Address}:{endpoint.Port}";
+                var observed = endpoint with { ProbeKey = key };
+                if (!_gameTargets.ContainsKey(key) &&
+                    _gameTargets.Values.Count(target => target.GameProfileId == endpoint.ProfileId) >= MaximumObservedEndpointsPerProfile)
+                {
+                    continue;
+                }
+
+                active.Add(observed);
+                if (!_gameTargets.ContainsKey(key))
+                {
+                    var profile = enabledProfiles.First(item => item.Id == endpoint.ProfileId);
+                    var target = new ProbeTarget(
+                        key,
+                        $"{profile.Name} - ICMP aprox. a {endpoint.Address}:{endpoint.Port}",
+                        endpoint.Address,
+                        ProbeType.Icmp,
+                        GameProfileId: profile.Id,
+                        GameProfileName: profile.Name,
+                        ProcessName: endpoint.ProcessName,
+                        ObservedPort: endpoint.Port);
+                    _gameTargets.Add(key, target);
+                    _statistics.Add(key, new LatencyStatistics());
+                    _recentMeasurements.Add(key, new Queue<int>());
+                }
             }
+
+            _activeGameEndpoints = active;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -503,36 +568,32 @@ internal sealed class DiagnosticSession
         }
         catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception or IOException)
         {
-            Trace.TraceWarning($"No se pudo detectar el cliente de LoL; el monitoreo de red continúa: {exception.Message}");
+            Trace.TraceWarning($"No se pudieron detectar conexiones de juegos; el monitoreo general continúa: {exception.Message}");
         }
     }
 
-    private static (string Address, int Port)? FindLolEndpoint()
+    private static IReadOnlyList<GameObservedEndpoint> FindGameEndpoints(IReadOnlyList<GameMonitoringProfile> profiles)
     {
-        var processIds = new HashSet<int>();
-        var processes = Process.GetProcesses();
-        foreach (var process in processes)
+        var processNames = new Dictionary<int, string>();
+        foreach (var process in Process.GetProcesses())
         {
             try
             {
-                if (process.ProcessName.Contains("League", StringComparison.OrdinalIgnoreCase))
-                {
-                    processIds.Add(process.Id);
-                }
+                processNames[process.Id] = process.ProcessName;
             }
             catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
             {
-                    Trace.TraceWarning($"No se pudo inspeccionar un proceso al detectar el cliente de LoL: {exception.Message}");
-                }
+                Trace.TraceWarning($"No se pudo inspeccionar un proceso durante la detección de juegos: {exception.Message}");
+            }
             finally
             {
                 process.Dispose();
             }
         }
 
-        if (processIds.Count == 0)
+        if (processNames.Count == 0)
         {
-            return null;
+            return Array.Empty<GameObservedEndpoint>();
         }
 
         using var netstat = Process.Start(new ProcessStartInfo
@@ -545,38 +606,55 @@ internal sealed class DiagnosticSession
         });
         if (netstat is null)
         {
-            return null;
+            throw new InvalidOperationException("No se pudo iniciar netstat para inspeccionar conexiones TCP activas.");
         }
 
         var outputTask = netstat.StandardOutput.ReadToEndAsync();
         if (!netstat.WaitForExit(3000))
         {
             netstat.Kill();
-            return null;
+            throw new IOException("La consulta de conexiones TCP excedió el tiempo límite.");
         }
 
-        var output = outputTask.GetAwaiter().GetResult();
-        foreach (var line in output.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries))
+        var results = new List<GameObservedEndpoint>();
+        foreach (var line in outputTask.GetAwaiter().GetResult().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries))
         {
             var match = Regex.Match(line, @"^\s*TCP\s+\S+\s+(?<remote>\S+)\s+ESTABLISHED\s+(?<pid>\d+)", RegexOptions.IgnoreCase);
-            if (!match.Success || !int.TryParse(match.Groups["pid"].Value, out var pid) || !processIds.Contains(pid))
+            if (!match.Success || !int.TryParse(match.Groups["pid"].Value, out var pid) ||
+                !processNames.TryGetValue(pid, out var processName))
             {
                 continue;
             }
 
-            var endpoint = match.Groups["remote"].Value;
-            var separator = endpoint.LastIndexOf(':');
-            var addressText = separator <= 0 ? string.Empty : endpoint[..separator].Trim('[', ']');
-            if (separator <= 0 || !int.TryParse(endpoint[(separator + 1)..], out var port) ||
+            var endpointText = match.Groups["remote"].Value;
+            var separator = endpointText.LastIndexOf(':');
+            var addressText = separator <= 0 ? string.Empty : endpointText[..separator].Trim('[', ']');
+            if (separator <= 0 || !int.TryParse(endpointText[(separator + 1)..], out var port) ||
                 !IPAddress.TryParse(addressText, out var address) || IsPrivateAddress(address))
             {
                 continue;
             }
 
-            return (address.ToString(), port);
+            foreach (var profile in profiles.Where(profile =>
+                         profile.ProcessNames.Any(candidate =>
+                         {
+                             var processPattern = Path.GetFileNameWithoutExtension(candidate.Trim());
+                             return processPattern.Length > 0 &&
+                                    processName.Contains(processPattern, StringComparison.OrdinalIgnoreCase);
+                         })))
+            {
+                if (results.Count(endpoint => endpoint.ProfileId == profile.Id) >= MaximumActiveEndpointsPerProfile ||
+                    results.Any(endpoint => endpoint.ProfileId == profile.Id &&
+                                            endpoint.Address == address.ToString() && endpoint.Port == port))
+                {
+                    continue;
+                }
+
+                results.Add(new GameObservedEndpoint(profile.Id, profile.Name, processName, address.ToString(), port, ""));
+            }
         }
 
-        return null;
+        return results;
     }
 
     private static bool IsPrivateAddress(IPAddress address)
