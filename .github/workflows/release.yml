@@ -87,6 +87,59 @@ jobs:
             throw "Building the Windows installer failed with exit code $LASTEXITCODE"
           }
 
+      - name: Sign Windows application and installer
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_CERT_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 }}
+          WINDOWS_SIGNING_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_BASE64) -or
+              [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_PASSWORD)) {
+            throw "Configure the WINDOWS_SIGNING_CERT_BASE64 and WINDOWS_SIGNING_CERT_PASSWORD repository secrets before creating a Store-ready release."
+          }
+
+          $sdkBin = "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
+          $signTool = Get-ChildItem $sdkBin -Filter signtool.exe -Recurse -ErrorAction Stop |
+            Where-Object { $_.Directory.Name -eq "x64" } |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (!$signTool) {
+            throw "Windows SDK SignTool was not found"
+          }
+
+          $certificatePath = Join-Path $env:RUNNER_TEMP "lagnostics-codesign.pfx"
+          try {
+            [IO.File]::WriteAllBytes(
+              $certificatePath,
+              [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERT_BASE64)
+            )
+
+            $version = $env:RELEASE_TAG.TrimStart("v")
+            $filesToSign = @(
+              "artifacts/publish/DiagnosticoLag.exe",
+              "artifacts/installer/DiagnosticoLag-$version-win-x64-setup.exe"
+            )
+            foreach ($file in $filesToSign) {
+              if (!(Test-Path $file)) {
+                throw "File to sign was not found: $file"
+              }
+              & $signTool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
+                /f $certificatePath /p $env:WINDOWS_SIGNING_CERT_PASSWORD $file
+              if ($LASTEXITCODE -ne 0) {
+                throw "Signing $file failed with exit code $LASTEXITCODE"
+              }
+              & $signTool verify /pa /all $file
+              if ($LASTEXITCODE -ne 0) {
+                throw "Signature verification failed for $file"
+              }
+            }
+          }
+          finally {
+            if (Test-Path $certificatePath) {
+              Remove-Item $certificatePath -Force
+            }
+          }
+
       - name: Package and create GitHub release
         shell: pwsh
         env:
