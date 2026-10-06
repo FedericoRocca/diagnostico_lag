@@ -2,7 +2,11 @@
 
 Aplicación de escritorio para Windows que ayuda a diagnosticar latencia, pérdida de paquetes y microcortes durante sesiones de gaming. Mide el router, el primer salto del proveedor y destinos de Internet, y muestra estadísticas y evolución en tiempo real.
 
-![Captura de Lagnostics](https://github.com/user-attachments/assets/5163a2b7-5347-4274-a805-24a510de1f00)
+<img width="1920" height="1020" alt="4" src="https://github.com/user-attachments/assets/a0b307ea-11e8-4908-add1-88fa9107759d" />
+<img width="1920" height="1020" alt="3" src="https://github.com/user-attachments/assets/ebddf7c5-da48-4853-bdfd-26c01a4d4207" />
+<img width="1920" height="1020" alt="2" src="https://github.com/user-attachments/assets/4168a30f-e465-4449-9868-232d22d8dc98" />
+<img width="1920" height="1020" alt="1" src="https://github.com/user-attachments/assets/e8e95b88-1da5-461b-b974-4db2a0296c4e" />
+
 
 ## Configuración
 
