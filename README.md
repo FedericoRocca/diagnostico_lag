@@ -4,6 +4,8 @@
 
 Aplicación de escritorio para Windows que ayuda a diagnosticar latencia, pérdida de paquetes y microcortes durante sesiones de gaming. Mide el router, el primer salto del proveedor y destinos de Internet, y muestra estadísticas y evolución en tiempo real.
 
+Al finalizar una sesión, muestra gráficos comparativos de latencia promedio/P95 y pérdida o fallos de conexión, junto con explicaciones de los hallazgos. El informe final de texto también se conserva en el registro y se puede exportar.
+
 <img width="1920" height="1020" alt="4" src="https://github.com/user-attachments/assets/a0b307ea-11e8-4908-add1-88fa9107759d" />
 <img width="1920" height="1020" alt="3" src="https://github.com/user-attachments/assets/ebddf7c5-da48-4853-bdfd-26c01a4d4207" />
 <img width="1920" height="1020" alt="2" src="https://github.com/user-attachments/assets/4168a30f-e465-4449-9868-232d22d8dc98" />

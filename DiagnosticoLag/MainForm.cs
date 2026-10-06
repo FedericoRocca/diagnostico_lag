@@ -666,8 +666,12 @@ internal sealed class MainForm : Form
 
         _chart.AddSample(DateTime.Now, snapshot.LastMeasurements, snapshot.Targets);
         var diagnosis = snapshot.Diagnosis;
+        var findingsText = diagnosis.Findings.Take(4).Select(finding =>
+            $"• {finding.Text}{Environment.NewLine}{Localization.T("Qué puede estar pasando")}: {finding.Explanation}");
         var diagnosisText = $"{Localization.T(diagnosis.Title)}{Environment.NewLine}{Localization.T(diagnosis.Explanation)}" +
-                            (diagnosis.Reasons.Count == 0 ? "" : $"{Environment.NewLine}{Environment.NewLine}• {string.Join($"{Environment.NewLine}• ", diagnosis.Reasons.Take(4).Select(Localization.T))}");
+                            (diagnosis.Findings.Count == 0
+                                ? ""
+                                : $"{Environment.NewLine}{Environment.NewLine}{string.Join($"{Environment.NewLine}{Environment.NewLine}", findingsText)}");
         if (_diagnosis.Text != diagnosisText)
         {
             _diagnosis.Text = diagnosisText;
@@ -765,13 +769,15 @@ internal sealed class MainForm : Form
             return;
         }
 
+        var snapshot = _session.CurrentSnapshot();
         var report = _session.BuildReport(type);
         if (type == "final")
         {
             _lastReport = report;
+            _lastSnapshot = snapshot;
         }
         AppendLog(report);
-        using var window = new ReportForm(report);
+        using var window = new ReportForm(report, snapshot);
         window.ShowDialog(this);
     }
 
@@ -1044,12 +1050,12 @@ internal sealed class BufferedRichTextBox : RichTextBox
 
 internal sealed class ReportForm : Form
 {
-    public ReportForm(string report)
+    public ReportForm(string report, MonitorSnapshot snapshot)
     {
         Text = Localization.T("Informe de diagnóstico");
-        Size = new Size(900, 700);
+        Size = new Size(1040, 780);
         StartPosition = FormStartPosition.CenterParent;
-        MinimumSize = new Size(650, 450);
+        MinimumSize = new Size(760, 560);
 
         var text = new RichTextBox
         {
@@ -1060,15 +1066,257 @@ internal sealed class ReportForm : Form
             Text = report,
             BackColor = Color.White
         };
+        var tabs = new TabControl { Dock = DockStyle.Fill };
+        var visualTab = new TabPage(Localization.T("Resumen visual"));
+        visualTab.Controls.Add(CreateVisualSummary(snapshot));
+        tabs.TabPages.Add(visualTab);
+
+        var reportTab = new TabPage(Localization.T("Informe detallado"));
+        reportTab.Controls.Add(text);
+        tabs.TabPages.Add(reportTab);
         var copy = new Button { Text = Localization.T("Copiar informe"), AutoSize = true, Height = 34, Margin = new Padding(0, 6, 8, 6) };
         var close = new Button { Text = Localization.T("Cerrar"), AutoSize = true, Height = 34, Margin = new Padding(0, 6, 8, 6) };
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 46, FlowDirection = FlowDirection.RightToLeft };
         buttons.Controls.Add(close);
         buttons.Controls.Add(copy);
-        Controls.Add(text);
+        Controls.Add(tabs);
         Controls.Add(buttons);
         copy.Click += (_, _) => Clipboard.SetText(report);
         close.Click += (_, _) => Close();
+    }
+
+    private static Control CreateVisualSummary(MonitorSnapshot snapshot)
+    {
+        var content = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            Padding = new Padding(14)
+        };
+        var diagnosisColor = snapshot.Diagnosis.Level switch
+        {
+            "PROBLEMA" => Color.Firebrick,
+            "ATENCION" => Color.DarkGoldenrod,
+            "DATOS_INSUFICIENTES" => Color.FromArgb(57, 91, 145),
+            _ => Color.DarkGreen
+        };
+        content.Controls.Add(new Label
+        {
+            Text = Localization.T(snapshot.Diagnosis.Title),
+            AutoSize = true,
+            Font = new Font("Segoe UI Semibold", 15F, FontStyle.Bold),
+            ForeColor = diagnosisColor,
+            MaximumSize = new Size(920, 0),
+            Margin = new Padding(0, 0, 0, 4)
+        });
+        content.Controls.Add(new Label
+        {
+            Text = $"{Localization.T(snapshot.Diagnosis.Explanation)}{Environment.NewLine}{Localization.F("Duración: {0} · destinos: {1}", FormatDuration(snapshot.Duration), snapshot.Targets.Count)}",
+            AutoSize = true,
+            MaximumSize = new Size(920, 0),
+            Margin = new Padding(0, 0, 0, 12)
+        });
+
+        if (snapshot.Targets.Count == 0)
+        {
+            content.Controls.Add(new Label { Text = Localization.T("Sin datos suficientes"), AutoSize = true });
+        }
+        else
+        {
+            content.Controls.Add(new SummaryChart(snapshot, SummaryChartKind.Latency));
+            content.Controls.Add(new SummaryChart(snapshot, SummaryChartKind.Loss));
+        }
+
+        var findingsHeading = new Label
+        {
+            Text = Localization.T("Observaciones y posibles causas"),
+            AutoSize = true,
+            Font = new Font("Segoe UI Semibold", 12F, FontStyle.Bold),
+            Margin = new Padding(0, 10, 0, 6)
+        };
+        content.Controls.Add(findingsHeading);
+        if (snapshot.Diagnosis.Findings.Count == 0)
+        {
+            content.Controls.Add(new Label
+            {
+                Text = Localization.T("No se detectaron observaciones que requieran atención según las reglas del diagnóstico."),
+                AutoSize = true,
+                MaximumSize = new Size(920, 0)
+            });
+        }
+        else
+        {
+            foreach (var finding in snapshot.Diagnosis.Findings)
+            {
+                var card = new FlowLayoutPanel
+                {
+                    AutoSize = true,
+                    AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                    FlowDirection = FlowDirection.TopDown,
+                    WrapContents = false,
+                    Width = 920,
+                    Padding = new Padding(10),
+                    Margin = new Padding(0, 0, 0, 8),
+                    BackColor = Color.FromArgb(247, 249, 252)
+                };
+                card.Controls.Add(new Label
+                {
+                    Text = finding.Text,
+                    AutoSize = true,
+                    MaximumSize = new Size(880, 0),
+                    Font = new Font("Segoe UI Semibold", 9.5F, FontStyle.Bold),
+                    ForeColor = Color.FromArgb(39, 57, 79)
+                });
+                card.Controls.Add(new Label
+                {
+                    Text = $"{Localization.T("Qué puede estar pasando")}: {finding.Explanation}",
+                    AutoSize = true,
+                    MaximumSize = new Size(880, 0),
+                    ForeColor = Color.FromArgb(83, 99, 119)
+                });
+                content.Controls.Add(card);
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(snapshot.Diagnosis.Recommendation))
+        {
+            content.Controls.Add(new Label
+            {
+                Text = $"{Localization.T("Recomendación")}: {Localization.T(snapshot.Diagnosis.Recommendation)}",
+                AutoSize = true,
+                MaximumSize = new Size(920, 0),
+                Font = new Font("Segoe UI Semibold", 9.5F, FontStyle.Bold),
+                Margin = new Padding(0, 8, 0, 12)
+            });
+        }
+
+        var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true, BackColor = Color.White };
+        scroll.Controls.Add(content);
+        return scroll;
+    }
+
+    private static string FormatDuration(TimeSpan duration) =>
+        $"{(int)duration.TotalHours:00}:{duration.Minutes:00}:{duration.Seconds:00}";
+}
+
+internal enum SummaryChartKind { Latency, Loss }
+
+internal sealed class SummaryChart : Control
+{
+    private readonly MonitorSnapshot _snapshot;
+    private readonly SummaryChartKind _kind;
+
+    public SummaryChart(MonitorSnapshot snapshot, SummaryChartKind kind)
+    {
+        _snapshot = snapshot;
+        _kind = kind;
+        Height = Math.Max(190, 90 + snapshot.Targets.Count * 38);
+        Width = 920;
+        Margin = new Padding(0, 6, 0, 8);
+        BackColor = Color.White;
+        AccessibleName = Localization.T(kind == SummaryChartKind.Latency
+            ? "Latencia promedio y P95 (ms)"
+            : "Sondas sin respuesta / fallos TCP (%)");
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.UserPaint, true);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        var graphics = e.Graphics;
+        graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        graphics.Clear(BackColor);
+        using var titleFont = new Font("Segoe UI Semibold", 10F, FontStyle.Bold);
+        using var textFont = new Font("Segoe UI", 8.5F);
+        using var titleBrush = new SolidBrush(Color.FromArgb(39, 57, 79));
+        using var textBrush = new SolidBrush(Color.FromArgb(67, 82, 102));
+        using var gridPen = new Pen(Color.FromArgb(230, 235, 241));
+        using var borderPen = new Pen(Color.FromArgb(215, 223, 232));
+
+        var title = Localization.T(_kind == SummaryChartKind.Latency
+            ? "Latencia promedio y P95 (ms)"
+            : "Sondas sin respuesta / fallos TCP (%)");
+        graphics.DrawString(title, titleFont, titleBrush, 10, 8);
+        var plotLeft = 230;
+        var plotRight = Math.Max(plotLeft + 1, ClientSize.Width - 88);
+        var plotWidth = plotRight - plotLeft;
+        var plotTop = 43;
+        var maxValue = _kind == SummaryChartKind.Latency
+            ? Math.Max(100d, _snapshot.Targets.Max(target => Math.Max(target.Statistics.Average, target.Statistics.P95)))
+            : _snapshot.Targets.Max(target => target.Statistics.LossPercent);
+        var axisMax = _kind == SummaryChartKind.Latency
+            ? Math.Ceiling(maxValue / 50d) * 50d
+            : Math.Min(100d, Math.Max(5d, Math.Ceiling(maxValue / 5d) * 5d));
+        for (var step = 0; step <= 4; step++)
+        {
+            var value = axisMax * step / 4;
+            var x = plotLeft + (int)(plotWidth * step / 4d);
+            graphics.DrawLine(gridPen, x, plotTop, x, ClientSize.Height - 10);
+            graphics.DrawString(_kind == SummaryChartKind.Latency
+                ? value.ToString("F0", Localization.Culture)
+                : value.ToString("F0", Localization.Culture) + "%", textFont, textBrush, x - 10, 26);
+        }
+
+        for (var index = 0; index < _snapshot.Targets.Count; index++)
+        {
+            var target = _snapshot.Targets[index];
+            var stats = target.Statistics;
+            var y = plotTop + 11 + index * 38;
+            var label = Localization.T(target.Target.Name);
+            graphics.DrawString(label, textFont, textBrush,
+                new RectangleF(10, y - 2, plotLeft - 20, 26));
+            if (stats.Samples == 0)
+            {
+                graphics.DrawString(Localization.T("Sin datos suficientes"), textFont, textBrush, plotLeft + 4, y);
+                continue;
+            }
+
+            if (_kind == SummaryChartKind.Latency)
+            {
+                DrawBar(graphics, plotLeft, plotWidth, y, stats.Average, axisMax, Color.FromArgb(55, 133, 192), textFont, textBrush,
+                    stats.Average.ToString("F1", Localization.Culture));
+                DrawBar(graphics, plotLeft, plotWidth, y + 16, stats.P95, axisMax, Color.FromArgb(224, 143, 53), textFont, textBrush,
+                    stats.P95.ToString(Localization.Culture));
+            }
+            else
+            {
+                DrawBar(graphics, plotLeft, plotWidth, y + 3, stats.LossPercent, axisMax, Color.FromArgb(195, 73, 73), textFont, textBrush,
+                    stats.LossPercent.ToString("F1", Localization.Culture) + "%");
+            }
+        }
+
+        if (_kind == SummaryChartKind.Latency)
+        {
+            using var averageBrush = new SolidBrush(Color.FromArgb(55, 133, 192));
+            using var p95Brush = new SolidBrush(Color.FromArgb(224, 143, 53));
+            graphics.FillRectangle(averageBrush, 12, ClientSize.Height - 15, 8, 8);
+            graphics.DrawString(Localization.T("Promedio"), textFont, textBrush, 24, ClientSize.Height - 19);
+            graphics.FillRectangle(p95Brush, 105, ClientSize.Height - 15, 8, 8);
+            graphics.DrawString(Localization.T("P95"), textFont, textBrush, 117, ClientSize.Height - 19);
+        }
+        else
+        {
+            graphics.DrawString(Localization.T("En TCP se muestran fallos de conexión; no equivalen a paquetes perdidos."),
+                textFont, textBrush, 12, ClientSize.Height - 19);
+        }
+
+        graphics.DrawRectangle(borderPen, 0, 0, ClientSize.Width - 1, ClientSize.Height - 1);
+    }
+
+    private static void DrawBar(Graphics graphics, int left, int width, int y, double value, double max,
+        Color color, Font font, Brush textBrush, string label)
+    {
+        using var barBrush = new SolidBrush(color);
+        var barWidth = (int)Math.Round(width * Math.Clamp(value / max, 0, 1));
+        if (barWidth > 0)
+        {
+            graphics.FillRectangle(barBrush, left, y, barWidth, 7);
+        }
+
+        graphics.DrawString(label, font, textBrush, left + barWidth + 4, y - 4);
     }
 }
 

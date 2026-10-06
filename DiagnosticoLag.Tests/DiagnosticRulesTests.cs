@@ -31,8 +31,8 @@ public sealed class DiagnosticRulesTests
     [Fact]
     public void IdentifiesTcpProblemsWhenIcmpIsHealthy()
     {
-        var problems = new List<string>();
-        var warnings = new List<string>();
+        var problems = new List<DiagnosticFinding>();
+        var warnings = new List<DiagnosticFinding>();
 
         DiagnosticSession.AddInternetDiagnosis(
             "Destino 1",
@@ -43,15 +43,16 @@ public sealed class DiagnosticRulesTests
             warnings);
 
         Assert.Single(problems);
-        Assert.Contains("TCP/443", problems[0]);
+        Assert.Contains("TCP/443", problems[0].Text);
+        Assert.False(string.IsNullOrWhiteSpace(problems[0].Explanation));
         Assert.Empty(warnings);
     }
 
     [Fact]
     public void TreatsIcmpOnlyProblemsAsWarningsWhenTcpIsHealthy()
     {
-        var problems = new List<string>();
-        var warnings = new List<string>();
+        var problems = new List<DiagnosticFinding>();
+        var warnings = new List<DiagnosticFinding>();
 
         DiagnosticSession.AddInternetDiagnosis(
             "Destino 1",
@@ -63,14 +64,15 @@ public sealed class DiagnosticRulesTests
 
         Assert.Empty(problems);
         Assert.Single(warnings);
-        Assert.Contains("filtrado", warnings[0], StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("filtrado", warnings[0].Text, StringComparison.OrdinalIgnoreCase);
+        Assert.False(string.IsNullOrWhiteSpace(warnings[0].Explanation));
     }
 
     [Fact]
     public void ReportsBothProtocolsWhenBothHaveProblems()
     {
-        var problems = new List<string>();
-        var warnings = new List<string>();
+        var problems = new List<DiagnosticFinding>();
+        var warnings = new List<DiagnosticFinding>();
 
         DiagnosticSession.AddInternetDiagnosis(
             "Destino 1",
@@ -81,16 +83,16 @@ public sealed class DiagnosticRulesTests
             warnings);
 
         Assert.Single(problems);
-        Assert.Contains("ICMP", problems[0]);
-        Assert.Contains("TCP/443", problems[0]);
+        Assert.Contains("ICMP", problems[0].Text);
+        Assert.Contains("TCP/443", problems[0].Text);
         Assert.Empty(warnings);
     }
 
     [Fact]
     public void IgnoresInternetComparisonsUntilBothTargetsHaveThirtySamples()
     {
-        var problems = new List<string>();
-        var warnings = new List<string>();
+        var problems = new List<DiagnosticFinding>();
+        var warnings = new List<DiagnosticFinding>();
 
         DiagnosticSession.AddInternetDiagnosis(
             "Destino 1",
@@ -107,8 +109,8 @@ public sealed class DiagnosticRulesTests
     [Fact]
     public void AddsWarningForIsolatedLargeIcmpSpikeEvenWhenAverageIsHealthy()
     {
-        var problems = new List<string>();
-        var warnings = new List<string>();
+        var problems = new List<DiagnosticFinding>();
+        var warnings = new List<DiagnosticFinding>();
 
         DiagnosticSession.AddInternetDiagnosis(
             "Destino 1",
@@ -120,14 +122,14 @@ public sealed class DiagnosticRulesTests
 
         Assert.Empty(problems);
         Assert.Single(warnings);
-        Assert.Contains("pico aislado", warnings[0]);
+        Assert.Contains("pico aislado", warnings[0].Text);
     }
 
     [Fact]
     public void ReportsExpectedIcmpFilteringForLeagueOfLegends()
     {
-        var problems = new List<string>();
-        var warnings = new List<string>();
+        var problems = new List<DiagnosticFinding>();
+        var warnings = new List<DiagnosticFinding>();
         Localization.SetLanguage("es");
 
         DiagnosticSession.AddInternetDiagnosis(
@@ -140,7 +142,8 @@ public sealed class DiagnosticRulesTests
 
         Assert.Empty(problems);
         Assert.Equal(2, warnings.Count);
-        Assert.Contains(warnings, warning => warning.Contains("no responde a ICMP", StringComparison.Ordinal));
+        Assert.Contains(warnings, warning => warning.Text.Contains("no responde a ICMP", StringComparison.Ordinal));
+        Assert.All(warnings, warning => Assert.False(string.IsNullOrWhiteSpace(warning.Explanation)));
     }
 
     private static IReadOnlyDictionary<string, StatSummary> Values(StatSummary icmp, StatSummary tcp) =>
