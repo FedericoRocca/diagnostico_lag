@@ -1,0 +1,81 @@
+LAGNOSTICS SOURCE-AVAILABLE ATTRIBUTION AND MODIFICATION LICENSE
+Version 1.0
+Copyright (c) 2026 Federico Rocca. All rights reserved.
+
+This license applies only to original material in the Lagnostics project
+that is owned by Federico Rocca. Third-party components, if any, remain
+subject to their own licenses.
+
+1. Definitions
+
+"Software" means the Lagnostics source code, object code, and accompanying
+materials covered by this license.
+
+"Cosmetic change" means a change limited to presentation that does not
+materially change the Software's functionality, diagnostics, data handling,
+or operation. Examples include changing colors, fonts, spacing, icons, or
+purely presentational text.
+
+"Substantial modification" means a change that materially adds, removes, or
+changes functionality, diagnostic methods, data handling, integrations, or
+the Software's operation. A change is not cosmetic merely because it is
+small in code size. A combination of changes may be substantial even if
+each change viewed alone is cosmetic.
+
+"Author" means Federico Rocca.
+
+2. Permission for unchanged and cosmetically changed copies
+
+You may use, copy, and redistribute the Software, in source or executable
+form, unchanged or with cosmetic changes, without paying a license fee,
+provided that you:
+
+  a. give clear and reasonably prominent credit to the Author as the
+     original author of Lagnostics;
+  b. retain this license and all existing copyright and attribution
+     notices in redistributed copies; and
+  c. identify your cosmetic changes and do not imply that the Author
+     created or endorses them.
+
+You may not charge a fee for the Software or access to it under this
+permission. This does not prevent charging for unrelated services that do
+not require payment for a copy of, or access to, the Software.
+
+3. Substantial modifications and commercial use
+
+You may make modifications for private use. You may not publish, distribute,
+sublicense, or commercially exploit the Software with substantial
+modifications unless you first obtain a separate written commercial license
+from the Author. The terms and any fee for that license must be agreed with
+the Author in writing.
+
+This license does not itself grant permission to sell unchanged or
+cosmetically changed copies, or to charge users for access to them.
+
+4. Attribution
+
+Attribution must identify Federico Rocca as the original author and include
+a link to https://github.com/FedericoRocca/diagnostico_lag where reasonably
+practicable. You must not remove or obscure existing notices.
+
+5. Restrictions
+
+This license does not grant rights to use the Lagnostics name, logos, or
+other marks to suggest endorsement, affiliation, or that a modified version
+is the official application. You must clearly distinguish modified
+distributions from the original Lagnostics release.
+
+6. No warranty
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. TO THE MAXIMUM EXTENT
+PERMITTED BY LAW, THE AUTHOR IS NOT LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER
+LIABILITY ARISING FROM THE SOFTWARE OR ITS USE.
+
+7. No other rights
+
+Any rights not expressly granted in this license are reserved by the
+Author. If a proposed use does not clearly fit the permissions above,
+contact the Author for written permission before distributing or
+commercially exploiting it.
