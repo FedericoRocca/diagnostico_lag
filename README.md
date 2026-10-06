@@ -17,3 +17,13 @@ Las preferencias se guardan en `%LOCALAPPDATA%\DiagnosticoLag\configuracion.json
 Los registros y CSV se crean en las carpetas configuradas. Los informes se pueden exportar desde la aplicación.
 
 Cada encabezado de la grilla incluye un indicador **(?)**: al pasar el cursor se muestra una breve descripción y al hacer clic se abre la explicación completa de esa métrica.
+
+## Distribución para Windows
+
+Las versiones publicadas están en [GitHub Releases](https://github.com/FedericoRocca/diagnostico_lag/releases). Cada release incluye el ZIP portable x64 y un instalador EXE autocontenido para Windows x64. El instalador se instala por usuario en `%LOCALAPPDATA%\Programs\Lagnostics`, agrega un acceso directo al menú Inicio y no requiere privilegios de administrador.
+
+Para distribuir una versión en Microsoft Store como aplicación EXE/MSI, usa la URL versionada del instalador de la release correspondiente, selecciona arquitectura **x64** y tipo **EXE**. Los modificadores de instalación silenciosa son `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-`; desmarca la opción que indica que el instalador silencioso no requiere modificadores. Reemplaza `v1.0.1` por el tag de la versión que envíes:
+
+`https://github.com/FedericoRocca/diagnostico_lag/releases/download/v1.0.1/DiagnosticoLag-1.0.1-win-x64-setup.exe`
+
+GitHub sirve el instalador como archivo descargable público. Para una actualización posterior, publica un nuevo tag y proporciona a Partner Center la nueva URL versionada.

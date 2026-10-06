@@ -26,6 +26,19 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           $version = $env:RELEASE_TAG.TrimStart("v")
+          if (Test-Path "DiagnosticoLag/bin") {
+            Remove-Item "DiagnosticoLag/bin" -Recurse -Force
+          }
+          dotnet clean DiagnosticoLag/DiagnosticoLag.csproj --configuration Release
+          if ($LASTEXITCODE -ne 0) {
+            throw "dotnet clean failed with exit code $LASTEXITCODE"
+          }
+          if (Test-Path "DiagnosticoLag/bin") {
+            Remove-Item "DiagnosticoLag/bin" -Recurse -Force
+          }
+          if (Test-Path "artifacts") {
+            Remove-Item "artifacts" -Recurse -Force
+          }
           dotnet publish DiagnosticoLag/DiagnosticoLag.csproj `
             --configuration Release `
             --runtime win-x64 `
@@ -41,6 +54,39 @@ jobs:
             throw "dotnet publish failed with exit code $LASTEXITCODE"
           }
 
+      - name: Build Windows installer
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $compiler = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+          if (!$compiler) {
+            $knownPaths = @(
+              "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+              "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+            )
+            $compilerPath = $knownPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+            if (!$compilerPath) {
+              choco install innosetup --yes --no-progress
+              if ($LASTEXITCODE -ne 0) {
+                throw "Installing Inno Setup failed with exit code $LASTEXITCODE"
+              }
+              $compilerPath = $knownPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+            }
+            if (!$compilerPath) {
+              throw "Inno Setup compiler ISCC.exe was not found"
+            }
+          } else {
+            $compilerPath = $compiler.Source
+          }
+
+          $env:APP_VERSION = $env:RELEASE_TAG.TrimStart("v")
+          $env:PUBLISH_DIR = (Resolve-Path "artifacts/publish").Path
+          & $compilerPath "installer/Lagnostics.iss"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Building the Windows installer failed with exit code $LASTEXITCODE"
+          }
+
       - name: Package and create GitHub release
         shell: pwsh
         env:
@@ -54,9 +100,14 @@ jobs:
 
           $archive = "DiagnosticoLag-$env:RELEASE_TAG-win-x64.zip"
           Compress-Archive -Path "artifacts/publish/*" -DestinationPath $archive
+          $installer = "artifacts/installer/DiagnosticoLag-$($env:RELEASE_TAG.TrimStart('v'))-win-x64-setup.exe"
+          if (!(Test-Path $installer)) {
+            throw "Installer build did not produce $installer"
+          }
           $releaseArgs = @(
             $env:RELEASE_TAG,
             $archive,
+            $installer,
             "--title", "Diagnóstico Lag $env:RELEASE_TAG",
             "--generate-notes"
           )
