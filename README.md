@@ -6,7 +6,6 @@ Aplicación de escritorio para Windows que ayuda a diagnosticar latencia, pérdi
 <img width="1920" height="1020" alt="3" src="https://github.com/user-attachments/assets/ebddf7c5-da48-4853-bdfd-26c01a4d4207" />
 <img width="1920" height="1020" alt="2" src="https://github.com/user-attachments/assets/4168a30f-e465-4449-9868-232d22d8dc98" />
 <img width="1920" height="1020" alt="1" src="https://github.com/user-attachments/assets/e8e95b88-1da5-461b-b974-4db2a0296c4e" />
-
 ## Configuración
 
 Las preferencias se guardan en `%LOCALAPPDATA%\DiagnosticoLag\configuracion.json` y se cargan al iniciar la aplicación. Desde **Configuración** se pueden ajustar:
