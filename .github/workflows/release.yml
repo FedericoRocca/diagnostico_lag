@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing version tag to publish (for example v1.1.1)
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -11,9 +17,18 @@ permissions:
 jobs:
   release:
     runs-on: windows-latest
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+
+      - name: Validate release tag
+        shell: pwsh
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') {
+            throw "Release tag must use the vMAJOR.MINOR.PATCH format."
+          }
 
       - name: Set up .NET
         uses: actions/setup-dotnet@v4
@@ -42,8 +57,6 @@ jobs:
 
       - name: Publish Windows x64 application
         shell: pwsh
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           $version = $env:RELEASE_TAG.TrimStart("v")
           if (Test-Path "DiagnosticoLag/bin") {
@@ -76,8 +89,6 @@ jobs:
 
       - name: Build Windows installer
         shell: pwsh
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           $compiler = Get-Command ISCC.exe -ErrorAction SilentlyContinue
           if (!$compiler) {
@@ -107,18 +118,28 @@ jobs:
             throw "Building the Windows installer failed with exit code $LASTEXITCODE"
           }
 
-      - name: Sign Windows application and installer
+      - name: Check Windows signing configuration
+        id: signing
         shell: pwsh
         env:
           WINDOWS_SIGNING_CERT_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 }}
           WINDOWS_SIGNING_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_BASE64) -or
               [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_PASSWORD)) {
-            throw "Configure the WINDOWS_SIGNING_CERT_BASE64 and WINDOWS_SIGNING_CERT_PASSWORD repository secrets before creating a Store-ready release."
+            "configured=false" >> $env:GITHUB_OUTPUT
+            Write-Host "::notice::Signing secrets are not configured; publishing unsigned release assets."
+          } else {
+            "configured=true" >> $env:GITHUB_OUTPUT
           }
 
+      - name: Sign Windows application and installer
+        if: steps.signing.outputs.configured == 'true'
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_CERT_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 }}
+          WINDOWS_SIGNING_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
+        run: |
           $sdkBin = "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
           $signTool = Get-ChildItem $sdkBin -Filter signtool.exe -Recurse -ErrorAction Stop |
             Where-Object { $_.Directory.Name -eq "x64" } |
@@ -164,7 +185,6 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           $executable = "artifacts/publish/DiagnosticoLag.exe"
           if (!(Test-Path $executable)) {
@@ -182,6 +202,8 @@ jobs:
             $archive,
             $installer,
             "--title", "Diagnóstico Lag $env:RELEASE_TAG",
-            "--generate-notes"
+            "--generate-notes",
+            "--verify-tag",
+            "--latest"
           )
           gh release create @releaseArgs
