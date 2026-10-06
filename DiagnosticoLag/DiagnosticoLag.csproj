@@ -5,7 +5,7 @@
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Version>0.1.4</Version>
+    <Version>1.0.0</Version>
     <Product>Lagnostics</Product>
     <ApplicationIcon>Assets\diagnostico-lag.ico</ApplicationIcon>
   </PropertyGroup>
@@ -13,6 +13,9 @@
   <ItemGroup>
     <EmbeddedResource Include="Assets\diagnostico-lag.ico">
       <LogicalName>DiagnosticoLag.Assets.diagnostico-lag.ico</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Translations\*.json">
+      <LogicalName>DiagnosticoLag.Translations.%(Filename)%(Extension)</LogicalName>
     </EmbeddedResource>
   </ItemGroup>
 

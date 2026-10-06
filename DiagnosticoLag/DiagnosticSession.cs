@@ -129,8 +129,8 @@ internal sealed class DiagnosticSession
             lastMeasurements.Add(target.Key, value);
             if (target.Type == ProbeType.Icmp && (value < 0 || value >= 120))
             {
-                var text = value < 0 ? "sin respuesta" : $"{value} ms";
-                AddEvent(target.Name, text, timestamp);
+                var text = value < 0 ? Localization.T("sin respuesta") : $"{value} {Localization.T("ms")}";
+                AddEvent(Localization.T(target.Name), text, timestamp);
             }
         }
 
@@ -162,64 +162,68 @@ internal sealed class DiagnosticSession
         {
             "",
             "=======================================================================",
-            $"INFORME {reportType.ToUpperInvariant()} - DIAGNÓSTICO DE RED",
+            Localization.F("INFORME {0} - DIAGNÓSTICO DE RED", Localization.T(reportType).ToUpper(Localization.Culture)),
             "=======================================================================",
-            $"Fecha: {DateTime.Now:yyyy-MM-dd HH:mm:ss}",
-            $"Duración: {FormatDuration(snapshot.Duration)}",
-            $"Conexión: {Connection.Type} ({Connection.Detail})",
-            $"Router: {RouterAddress} | ISP (primer salto): {IspAddress ?? "no detectado"}",
-            $"Destinos externos: { _settings.CloudflareAddress} | {_settings.GoogleAddress}",
-            "Las mediciones de juegos son referencias ICMP aproximadas a endpoints TCP observados del proceso; no representan el ping real de la partida.",
+            $"{Localization.T("Fecha")}: {DateTime.Now:yyyy-MM-dd HH:mm:ss}",
+            $"{Localization.T("Duración")}: {FormatDuration(snapshot.Duration)}",
+            $"{Localization.T("Conexión")}: {Localization.T(Connection.Type)} ({Connection.Detail})",
+            $"{Localization.T("Router")}: {RouterAddress} | {Localization.T("ISP (primer salto)")}: {IspAddress ?? Localization.T("no detectado")}",
+            $"{Localization.T("Destinos externos")}: { _settings.CloudflareAddress} | {_settings.GoogleAddress}",
+            Localization.T("Las mediciones de juegos son referencias ICMP aproximadas a endpoints TCP observados del proceso; no representan el ping real de la partida."),
             _baseline is null
-                ? $"Línea base: pendiente ({Math.Max(0, 60 - _samples)} muestras restantes)"
-                : $"Línea base inicial (primeros 60 sondeos): router {_baseline.Router.Average} ms / jitter {_baseline.Router.Jitter} ms; destino 1 {_baseline.Cloudflare.Average} ms; destino 2 {_baseline.Google.Average} ms",
+                ? $"{Localization.T("Línea base")}: {Localization.F("pendiente ({0} muestras restantes)", Math.Max(0, 60 - _samples))}"
+                : Localization.F("Línea base inicial (primeros 60 sondeos): router {0} ms / jitter {1} ms; destino 1 {2} ms; destino 2 {3} ms",
+                    _baseline.Router.Average, _baseline.Router.Jitter, _baseline.Cloudflare.Average, _baseline.Google.Average),
             ""
         };
 
         foreach (var target in snapshot.Targets)
         {
             var s = target.Statistics;
-            var lossLabel = target.Target.Type == ProbeType.Tcp ? "Fallos" : "Pérdida";
+            var lossLabel = Localization.T(target.Target.Type == ProbeType.Tcp ? "Fallos" : "Pérdida");
             var endpoint = target.Target.ObservedPort is int observedPort
                 ? $"{target.Target.Address}:{observedPort} (TCP observado; referencia ICMP)"
                 : target.Target.Type == ProbeType.Tcp
                     ? $"{target.Target.Address}:{target.Target.Port}"
                     : target.Target.Address;
-            report.Add($"[{target.Target.Name} - {endpoint}] {s.Samples} muestras");
-            report.Add($"  Promedio {s.Average} ms | Mediana {s.Median} ms | P95 {s.P95} ms | P99 {s.P99} ms | Máximo {s.Maximum} ms");
-            report.Add($"  Jitter {s.Jitter} ms | Picos 80-119 ms: {s.Spikes80} | >=120 ms: {s.Spikes120} | {lossLabel}: {s.LossPercent}% ({s.Lost}/{s.Samples})");
+            report.Add($"[{Localization.T(target.Target.Name)} - {endpoint}] {Localization.F("{0} muestras", s.Samples)}");
+            report.Add(Localization.F("Promedio {0} ms | Mediana {1} ms | P95 {2} ms | P99 {3} ms | Máximo {4} ms",
+                s.Average, s.Median, s.P95, s.P99, s.Maximum));
+            report.Add(Localization.F("Jitter {0} ms | Picos 80-119 ms: {1} | >=120 ms: {2} | {3}: {4}% ({5}/{6})",
+                s.Jitter, s.Spikes80, s.Spikes120, lossLabel, s.LossPercent, s.Lost, s.Samples));
         }
 
         if (snapshot.GameEndpoints.Count > 0)
         {
             report.Add("");
-            report.Add("CONEXIONES DE JUEGOS OBSERVADAS:");
+            report.Add(Localization.T("CONEXIONES DE JUEGOS OBSERVADAS:"));
             report.AddRange(snapshot.GameEndpoints.Select(endpoint =>
-                $"  {endpoint.ProfileName}: {endpoint.Address}:{endpoint.Port} (proceso {endpoint.ProcessName}); la ruta ICMP es una referencia, no la latencia de la partida."));
+                Localization.F("  {0}: {1}:{2} (proceso {3}); la ruta ICMP es una referencia, no la latencia de la partida.",
+                    endpoint.ProfileName, endpoint.Address, endpoint.Port, endpoint.ProcessName)));
         }
 
         report.Add("");
-        report.Add($"DIAGNÓSTICO: {snapshot.Diagnosis.Title}");
-        report.Add(snapshot.Diagnosis.Explanation);
-        report.AddRange(snapshot.Diagnosis.Reasons.Select(reason => $"- {reason}"));
+        report.Add(Localization.F("DIAGNÓSTICO: {0}", Localization.T(snapshot.Diagnosis.Title)));
+        report.Add(Localization.T(snapshot.Diagnosis.Explanation));
+        report.AddRange(snapshot.Diagnosis.Reasons.Select(reason => $"- {Localization.T(reason)}"));
         if (!string.IsNullOrWhiteSpace(snapshot.Diagnosis.Recommendation))
         {
-            report.Add($"Recomendación: {snapshot.Diagnosis.Recommendation}");
+            report.Add(Localization.F("Recomendación: {0}", Localization.T(snapshot.Diagnosis.Recommendation)));
         }
 
         report.Add("");
-        report.Add($"NOTA: se requieren al menos 30 muestras por destino para incluirlo en el diagnóstico. Se sondea cada {_settings.SampleIntervalSeconds} segundo(s).");
-        report.Add("NOTA: el primer salto del ISP es orientativo. Los endpoints de juegos se observan en conexiones TCP de sus procesos y pueden ser auxiliares, no el servidor de partida.");
-        report.Add("NOTA: ICMP puede estar filtrado o recibir menor prioridad; las mediciones TCP en el puerto 443 aportan una referencia distinta.");
+        report.Add(Localization.F("NOTA: se requieren al menos 30 muestras por destino para incluirlo en el diagnóstico. Se sondea cada {0} segundo(s).", _settings.SampleIntervalSeconds));
+        report.Add(Localization.T("NOTA: el primer salto del ISP es orientativo. Los endpoints de juegos se observan en conexiones TCP de sus procesos y pueden ser auxiliares, no el servidor de partida."));
+        report.Add(Localization.T("NOTA: ICMP puede estar filtrado o recibir menor prioridad; las mediciones TCP en el puerto 443 aportan una referencia distinta."));
         if (snapshot.GameEndpoints.Count > 0)
         {
-            report.Add("NOTA: la latencia ICMP a un endpoint de juego es una referencia aproximada de ruta, no el ping real del juego; muchos juegos usan UDP o protocolos propios.");
+            report.Add(Localization.T("NOTA: la latencia ICMP a un endpoint de juego es una referencia aproximada de ruta, no el ping real del juego; muchos juegos usan UDP o protocolos propios."));
         }
         if (snapshot.RecentEvents.Count > 0)
         {
             report.Add("");
-            report.Add("EVENTOS RECIENTES:");
-            report.AddRange(snapshot.RecentEvents);
+            report.Add(Localization.T("EVENTOS RECIENTES:"));
+            report.AddRange(snapshot.RecentEvents.Select(Localization.T));
         }
 
         report.Add("=======================================================================");
@@ -332,9 +336,9 @@ internal sealed class DiagnosticSession
             var remaining = 30 - values["router"].Samples;
             return new DiagnosticResult(
                 "DATOS_INSUFICIENTES",
-                "Midiendo: todavía no hay muestras suficientes",
-                $"Se necesitan al menos 30 muestras (faltan {remaining}) para evaluar los resultados. Una conclusión más confiable requiere dejar correr el monitoreo durante varios minutos.",
-                "Mantené el monitoreo activo mientras experimentás el problema.",
+                Localization.T("Midiendo: todavía no hay muestras suficientes"),
+                Localization.F("Se necesitan al menos 30 muestras (faltan {0}) para evaluar los resultados. Una conclusión más confiable requiere dejar correr el monitoreo durante varios minutos.", remaining),
+                Localization.T("Mantené el monitoreo activo mientras experimentás el problema."),
                 Array.Empty<string>());
         }
 
@@ -343,17 +347,17 @@ internal sealed class DiagnosticSession
         var warnings = new List<string>();
         var router = values["router"];
 
-        if (router.LossPercent >= 5) localProblems.Add($"Router: pérdida de paquetes ({router.Lost}/{router.Samples}, {router.LossPercent}%).");
-        if (router.Average > 20) localProblems.Add($"Router: latencia media alta ({router.Average} ms).");
-        if (router.Jitter > 8) localProblems.Add($"Router: jitter alto ({router.Jitter} ms).");
-        if (HasFrequentSpikes(router)) localProblems.Add("Router: se registraron picos frecuentes de latencia.");
-        if (router.Maximum >= 150) warnings.Add($"Router: pico máximo aislado de {router.Maximum} ms.");
-        if (router.P95 > 10) warnings.Add($"Router: P95 de {router.P95} ms.");
-        if (router.P99 > 30) warnings.Add($"Router: P99 de {router.P99} ms.");
-        if (router.Jitter > 5 && router.Jitter <= 8) warnings.Add($"Router: jitter de {router.Jitter} ms, por encima de lo deseable.");
-        if (router.LossPercent > 0.5 && router.LossPercent < 5) warnings.Add($"Router: pérdida de paquetes de {router.LossPercent}%.");
+        if (router.LossPercent >= 5) localProblems.Add(Localization.F("Router: pérdida de paquetes ({0}/{1}, {2}%).", router.Lost, router.Samples, router.LossPercent));
+        if (router.Average > 20) localProblems.Add(Localization.F("Router: latencia media alta ({0} ms).", router.Average));
+        if (router.Jitter > 8) localProblems.Add(Localization.F("Router: jitter alto ({0} ms).", router.Jitter));
+        if (HasFrequentSpikes(router)) localProblems.Add(Localization.T("Router: se registraron picos frecuentes de latencia."));
+        if (router.Maximum >= 150) warnings.Add(Localization.F("Router: pico máximo aislado de {0} ms.", router.Maximum));
+        if (router.P95 > 10) warnings.Add(Localization.F("Router: P95 de {0} ms.", router.P95));
+        if (router.P99 > 30) warnings.Add(Localization.F("Router: P99 de {0} ms.", router.P99));
+        if (router.Jitter > 5 && router.Jitter <= 8) warnings.Add(Localization.F("Router: jitter de {0} ms, por encima de lo deseable.", router.Jitter));
+        if (router.LossPercent > 0.5 && router.LossPercent < 5) warnings.Add(Localization.F("Router: pérdida de paquetes de {0}%.", router.LossPercent));
         if (Connection.Type == "Wi-Fi" && Connection.WifiSignal is < 50)
-            warnings.Add($"Señal Wi-Fi baja ({Connection.WifiSignal}%); podría causar picos.");
+            warnings.Add(Localization.F("Señal Wi-Fi baja ({0}%); podría causar picos.", Connection.WifiSignal));
 
         AddInternetDiagnosis("Destino 1", "cloudflare-icmp", "cloudflare-tcp", values, ispProblems, warnings);
         AddInternetDiagnosis("Destino 2", "google-icmp", "google-tcp", values, ispProblems, warnings);
@@ -367,14 +371,14 @@ internal sealed class DiagnosticSession
 
             if (gameRoute.LossPercent > 3 || gameRoute.Average > 150 || gameRoute.Jitter > 25 || HasFrequentSpikes(gameRoute))
             {
-                warnings.Add($"{gameTarget.GameProfileName}: la referencia ICMP a {gameTarget.Address} presenta anomalías; esto no confirma problemas en el servidor ni mide el ping real de la partida.");
+                warnings.Add(Localization.F("{0}: la referencia ICMP a {1} presenta anomalías; esto no confirma problemas en el servidor ni mide el ping real de la partida.", gameTarget.GameProfileName, gameTarget.Address));
             }
         }
 
         if (values.TryGetValue("isp", out var isp) && ispProblems.Count > 0 &&
             (HasFrequentSpikes(isp) || isp.LossPercent > 3 || isp.Jitter > 15))
         {
-            ispProblems.Add($"El primer salto del ISP también presenta anomalías (jitter {isp.Jitter} ms, pérdida {isp.LossPercent}%).");
+            ispProblems.Add(Localization.F("El primer salto del ISP también presenta anomalías (jitter {0} ms, pérdida {1}%).", isp.Jitter, isp.LossPercent));
         }
 
         if (HasFrequentSpikes(router) &&
@@ -382,7 +386,7 @@ internal sealed class DiagnosticSession
             !HasFrequentSpikes(values["google-icmp"]) &&
             (!values.TryGetValue("isp", out isp) || !HasFrequentSpikes(isp)))
         {
-            warnings.Add("Los picos del router no se repiten en destinos externos; apunta más a Wi-Fi o al router que al ISP.");
+            warnings.Add(Localization.T("Los picos del router no se repiten en destinos externos; apunta más a Wi-Fi o al router que al ISP."));
         }
 
         AddBaselineWarnings(recentValues, warnings);
@@ -390,23 +394,23 @@ internal sealed class DiagnosticSession
 
         if (localProblems.Count > 0)
         {
-            return new DiagnosticResult("PROBLEMA", "Problema en la red local", "Se observan fallos hasta el router, antes de salir a Internet.",
-                "Repetí la prueba por Ethernet. Si desaparece, revisá el Wi-Fi; si persiste, revisá el router.", localProblems.Concat(warnings).ToArray());
+            return new DiagnosticResult("PROBLEMA", Localization.T("Problema en la red local"), Localization.T("Se observan fallos hasta el router, antes de salir a Internet."),
+                Localization.T("Repetí la prueba por Ethernet. Si desaparece, revisá el Wi-Fi; si persiste, revisá el router."), localProblems.Concat(warnings).ToArray());
         }
 
         if (ispProblems.Count > 0)
         {
-            return new DiagnosticResult("PROBLEMA", "Problema de conexión a Internet", "La red local parece estable, pero hay anomalías en conexiones externas.",
-                "Guardá el registro y compartilo con tu proveedor si el problema persiste.", ispProblems.Concat(warnings).ToArray());
+            return new DiagnosticResult("PROBLEMA", Localization.T("Problema de conexión a Internet"), Localization.T("La red local parece estable, pero hay anomalías en conexiones externas."),
+                Localization.T("Guardá el registro y compartilo con tu proveedor si el problema persiste."), ispProblems.Concat(warnings).ToArray());
         }
 
         if (warnings.Count > 0)
         {
-            return new DiagnosticResult("ATENCION", "Se detectaron anomalías aisladas", "No hay evidencia suficiente de un problema sostenido.",
-                "Dejá correr el monitoreo mientras ocurre el lag y repetí la prueba por Ethernet.", warnings);
+            return new DiagnosticResult("ATENCION", Localization.T("Se detectaron anomalías aisladas"), Localization.T("No hay evidencia suficiente de un problema sostenido."),
+                Localization.T("Dejá correr el monitoreo mientras ocurre el lag y repetí la prueba por Ethernet."), warnings);
         }
 
-        return new DiagnosticResult("OK", "Sin problemas relevantes en las mediciones", "No se observan pérdidas relevantes, jitter alto ni picos frecuentes.",
+        return new DiagnosticResult("OK", Localization.T("Sin problemas relevantes en las mediciones"), Localization.T("No se observan pérdidas relevantes, jitter alto ni picos frecuentes."),
             "", Array.Empty<string>());
     }
 
@@ -429,16 +433,16 @@ internal sealed class DiagnosticSession
         var tcpProblem = tcp.LossPercent > 3 || tcp.Average > 150 || tcp.Jitter > 20 || HasFrequentSpikes(tcp);
 
         if (icmpProblem && tcpProblem)
-            problems.Add($"{name}: anomalías tanto en ICMP como en TCP/443 (jitter TCP {tcp.Jitter} ms, fallos {tcp.LossPercent}%).");
+            problems.Add(Localization.F("{0}: anomalías tanto en ICMP como en TCP/443 (jitter TCP {1} ms, fallos {2}%).", Localization.T(name), tcp.Jitter, tcp.LossPercent));
         else if (tcpProblem)
-            problems.Add($"{name}: la conexión TCP/443 presenta anomalías aunque ICMP no; es una referencia de tráfico real.");
+            problems.Add(Localization.F("{0}: la conexión TCP/443 presenta anomalías aunque ICMP no; es una referencia de tráfico real.", Localization.T(name)));
         else if (icmpProblem)
-            warnings.Add($"{name}: ICMP muestra anomalías, pero TCP/443 está limpio; podría ser priorización o filtrado de ping.");
+            warnings.Add(Localization.F("{0}: ICMP muestra anomalías, pero TCP/443 está limpio; podría ser priorización o filtrado de ping.", Localization.T(name)));
 
-        if (icmp.Maximum >= 200) warnings.Add($"{name} ICMP: pico aislado de {icmp.Maximum} ms.");
-        if (tcp.Maximum >= 250) warnings.Add($"{name} TCP: conexión de hasta {tcp.Maximum} ms.");
+        if (icmp.Maximum >= 200) warnings.Add(Localization.F("{0} ICMP: pico aislado de {1} ms.", Localization.T(name), icmp.Maximum));
+        if (tcp.Maximum >= 250) warnings.Add(Localization.F("{0} TCP: conexión de hasta {1} ms.", Localization.T(name), tcp.Maximum));
         if (name.StartsWith("LoL", StringComparison.Ordinal) && icmp.LossPercent >= 100 && !tcpProblem)
-            warnings.Add("El destino aproximado de LoL no responde a ICMP; es común que servidores de juego filtren ping.");
+            warnings.Add(Localization.T("El destino aproximado de LoL no responde a ICMP; es común que servidores de juego filtren ping."));
     }
 
     private void AddBaselineWarnings(IReadOnlyDictionary<string, StatSummary> recentValues, ICollection<string> warnings)
@@ -448,21 +452,21 @@ internal sealed class DiagnosticSession
             return;
         }
 
-        CompareBaseline("Router (últimas muestras)", recentValues["router"], _baseline.Router, warnings);
-        CompareBaseline("Destino 1 (últimas 60 muestras)", recentValues["cloudflare-icmp"], _baseline.Cloudflare, warnings);
-        CompareBaseline("Destino 2 (últimas 60 muestras)", recentValues["google-icmp"], _baseline.Google, warnings);
+        CompareBaseline(Localization.T("Router (últimas muestras)"), recentValues["router"], _baseline.Router, warnings);
+        CompareBaseline(Localization.T("Destino 1 (últimas 60 muestras)"), recentValues["cloudflare-icmp"], _baseline.Cloudflare, warnings);
+        CompareBaseline(Localization.T("Destino 2 (últimas 60 muestras)"), recentValues["google-icmp"], _baseline.Google, warnings);
 
         var baselineRouter = _baseline.Router;
         var currentRouter = recentValues["router"];
         var jitterThreshold = Math.Max(baselineRouter.Jitter * 3, baselineRouter.Jitter + 5);
         if (currentRouter.Jitter >= jitterThreshold && currentRouter.Jitter > 3)
-            warnings.Add($"El jitter actual del router ({currentRouter.Jitter} ms) supera ampliamente la línea base ({baselineRouter.Jitter} ms).");
+            warnings.Add(Localization.F("El jitter actual del router ({0} ms) supera ampliamente la línea base ({1} ms).", currentRouter.Jitter, baselineRouter.Jitter));
     }
 
     private static void CompareBaseline(string name, StatSummary current, StatSummary baseline, ICollection<string> warnings)
     {
         if (baseline.Average > 0 && current.Average >= baseline.Average * 3 && current.Average - baseline.Average >= 5)
-            warnings.Add($"{name}: promedio actual ({current.Average} ms) muy superior a la línea base ({baseline.Average} ms).");
+            warnings.Add(Localization.F("{0}: promedio actual ({1} ms) muy superior a la línea base ({2} ms).", name, current.Average, baseline.Average));
     }
 
     private static string FormatDuration(TimeSpan duration)
@@ -492,7 +496,7 @@ internal sealed class DiagnosticSession
             var deviation = Math.Sqrt(intervals.Sum(interval => Math.Pow(interval - average, 2)) / intervals.Length);
             if (deviation / average <= 0.25)
             {
-                warnings.Add($"{name}: anomalías periódicas cada ~{average:F0} s; revisá tareas programadas, sincronización o escaneos DFS del Wi-Fi.");
+                warnings.Add(Localization.F("{0}: anomalías periódicas cada ~{1} s; revisá tareas programadas, sincronización o escaneos DFS del Wi-Fi.", name, average.ToString("F0", Localization.Culture)));
             }
         }
     }

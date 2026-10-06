@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Globalization;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Text.Json;
@@ -26,12 +28,16 @@ internal sealed record DiagnosticSettings(
     public bool IncludeLeagueInDiagnosis { get; init; }
     public string LogDirectory { get; init; } = DefaultOutputDirectory;
     public string CsvDirectory { get; init; } = DefaultOutputDirectory;
+    public string Language { get; init; } = "en";
 
     public static string DefaultOutputDirectory => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "DiagnosticoLag", "sesiones");
 
-    public static DiagnosticSettings Default { get; } = new("1.1.1.1", "8.8.8.8", 1, null);
+    public static DiagnosticSettings Default { get; } = new("1.1.1.1", "8.8.8.8", 1, null)
+    {
+        Language = "en"
+    };
 
     public static string SettingsPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -41,15 +47,19 @@ internal sealed record DiagnosticSettings(
     {
         if (!File.Exists(SettingsPath))
         {
-            return Default;
+            var initialSettings = Default with { Language = DetectInitialLanguage() };
+            initialSettings.Save();
+            return initialSettings;
         }
 
         try
         {
             var json = File.ReadAllText(SettingsPath);
             var settings = JsonSerializer.Deserialize<DiagnosticSettings>(json)
-                ?? throw new InvalidDataException("El archivo de configuración está vacío.");
+                ?? throw new InvalidDataException(Localization.T("El archivo de configuración está vacío."));
             using var document = JsonDocument.Parse(json);
+            var hasSavedLanguage = document.RootElement.TryGetProperty(nameof(Language), out _);
+            var hasValidLanguage = settings.Language is "es" or "en";
             if (!document.RootElement.TryGetProperty(nameof(GameProfiles), out _))
             {
                 var detectLeague = document.RootElement.TryGetProperty(nameof(DetectLeague), out var detectValue) &&
@@ -67,12 +77,22 @@ internal sealed record DiagnosticSettings(
                 };
             }
 
+            if (!hasValidLanguage)
+            {
+                settings = settings with { Language = hasSavedLanguage ? "en" : DetectInitialLanguage() };
+            }
+
             Validate(settings);
+            if (!hasSavedLanguage || !hasValidLanguage)
+            {
+                settings.Save();
+            }
+
             return settings;
         }
         catch (JsonException exception)
         {
-            throw new InvalidDataException($"La configuración guardada no tiene un formato válido: {SettingsPath}", exception);
+            throw new InvalidDataException(Localization.F("La configuración guardada no tiene un formato válido: {0}", SettingsPath), exception);
         }
     }
 
@@ -98,22 +118,22 @@ internal sealed record DiagnosticSettings(
     {
         if (settings.SampleIntervalSeconds is < 1 or > 10)
         {
-            throw new InvalidDataException("El intervalo de medición debe estar entre 1 y 10 segundos.");
+            throw new InvalidDataException(Localization.T("El intervalo de medición debe estar entre 1 y 10 segundos."));
         }
 
         if (!IsValidHost(settings.CloudflareAddress) || !IsValidHost(settings.GoogleAddress))
         {
-            throw new InvalidDataException("Ingresá una dirección IP o un nombre de host válido para cada destino.");
+            throw new InvalidDataException(Localization.T("Ingresá una dirección IP o un nombre de host válido para cada destino."));
         }
 
         if (settings.GameProfiles is null)
         {
-            throw new InvalidDataException("La lista de perfiles de juegos no es válida.");
+            throw new InvalidDataException(Localization.T("La lista de perfiles de juegos no es válida."));
         }
 
         if (settings.GameProfiles.Count > 8)
         {
-            throw new InvalidDataException("Se pueden configurar hasta 8 perfiles de juegos.");
+            throw new InvalidDataException(Localization.T("Se pueden configurar hasta 8 perfiles de juegos."));
         }
 
         var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -124,7 +144,7 @@ internal sealed record DiagnosticSettings(
                 profile.ProcessNames is null || profile.ProcessNames.Count is 0 or > 8 ||
                 profile.ProcessNames.Any(processName => string.IsNullOrWhiteSpace(processName) || processName.Length > 128))
             {
-                throw new InvalidDataException("Cada perfil debe tener un nombre, un identificador único y de 1 a 8 nombres de proceso válidos.");
+                throw new InvalidDataException(Localization.T("Cada perfil debe tener un nombre, un identificador único y de 1 a 8 nombres de proceso válidos."));
             }
         }
 
@@ -135,25 +155,40 @@ internal sealed record DiagnosticSettings(
     private static GameMonitoringProfile GameProfileSettingsWithEnabled(GameMonitoringProfile profile, bool enabled) =>
         profile with { Enabled = enabled };
 
+    private static string DetectInitialLanguage()
+    {
+        try
+        {
+            return CultureInfo.CurrentUICulture.TwoLetterISOLanguageName.Equals("es", StringComparison.OrdinalIgnoreCase)
+                ? "es"
+                : "en";
+        }
+        catch (Exception exception)
+        {
+            Trace.TraceWarning($"No se pudo detectar el idioma del sistema; se usará inglés: {exception}");
+            return "en";
+        }
+    }
+
     private static void ValidateDirectory(string path, string label)
     {
         if (string.IsNullOrWhiteSpace(path))
         {
-            throw new InvalidDataException($"Seleccioná una carpeta válida para guardar el archivo de {label}.");
+            throw new InvalidDataException(Localization.F("Seleccioná una carpeta válida para guardar el archivo de {0}.", Localization.T(label)));
         }
 
         try
         {
             if (!Path.IsPathFullyQualified(path))
             {
-                throw new InvalidDataException($"La carpeta para el archivo de {label} debe ser una ruta absoluta.");
+                throw new InvalidDataException(Localization.F("La carpeta para el archivo de {0} debe ser una ruta absoluta.", Localization.T(label)));
             }
 
             _ = Path.GetFullPath(path);
         }
         catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
         {
-            throw new InvalidDataException($"La carpeta para el archivo de {label} no es válida: {exception.Message}", exception);
+            throw new InvalidDataException(Localization.F("La carpeta para el archivo de {0} no es válida: {1}", Localization.T(label), exception.Message), exception);
         }
     }
 

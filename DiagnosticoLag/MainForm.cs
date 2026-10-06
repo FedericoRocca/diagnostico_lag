@@ -3,6 +3,8 @@ using System.Drawing.Drawing2D;
 using System.Globalization;
 using System.Reflection;
 using System.Text;
+using System.Collections;
+using System.ComponentModel;
 
 namespace DiagnosticoLag;
 
@@ -22,6 +24,10 @@ internal sealed class MainForm : Form
     private readonly Button _exportReportButton = new();
     private readonly Button _exportCsvButton = new();
     private readonly Button _settingsButton = new();
+    private readonly Button _helpButton = new();
+    private readonly Button _openLogButton = new();
+    private readonly Label _titleLabel = new();
+    private readonly Label _subtitleLabel = new();
     private readonly Icon _applicationIcon;
     private DiagnosticSession? _session;
     private DiagnosticSettings _settings = DiagnosticSettings.Default;
@@ -30,6 +36,9 @@ internal sealed class MainForm : Form
     private string? _sessionLogPath;
     private string? _sessionCsvPath;
     private string? _lastReport;
+    private MonitorSnapshot? _lastSnapshot;
+    private int? _sortedColumnIndex;
+    private ListSortDirection _sortDirection = ListSortDirection.Ascending;
     private bool _sampling;
     private bool _loggingAvailable = true;
     private bool _csvAvailable = true;
@@ -37,7 +46,6 @@ internal sealed class MainForm : Form
 
     public MainForm()
     {
-        Text = "Diagnóstico de red para gaming";
         _applicationIcon = LoadApplicationIcon();
         Icon = _applicationIcon;
         MinimumSize = new Size(980, 680);
@@ -52,11 +60,14 @@ internal sealed class MainForm : Form
         }
         catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException)
         {
-            MessageBox.Show(this, $"{exception.Message}{Environment.NewLine}{Environment.NewLine}Se usarán los valores predeterminados. Podés revisarlos en Configuración.",
-                "No se pudo cargar la configuración", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show(this, $"{exception.Message}{Environment.NewLine}{Environment.NewLine}{Localization.T("Se usarán los valores predeterminados. Podés revisarlos en Configuración.")}",
+                Localization.T("No se pudo cargar la configuración"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
 
+        Localization.SetLanguage(_settings.Language);
+        Text = Localization.T("Diagnóstico de red para gaming");
         BuildInterface();
+        ApplyLocalization();
         _timer.Tick += async (_, _) => await SampleOnceAsync();
         FormClosing += OnFormClosing;
         SetMonitoringControls(false, false);
@@ -98,37 +109,31 @@ internal sealed class MainForm : Form
         var heading = new Panel { Dock = DockStyle.Fill };
         ConfigureButton(_settingsButton, "Configuración", Color.FromArgb(78, 96, 120));
         _settingsButton.Height = 34;
-        var title = new Label
-        {
-            Text = $"{ApplicationName} · Beta {ApplicationVersion.ToString(3)}",
-            Font = new Font("Segoe UI Semibold", 15F, FontStyle.Bold),
-            ForeColor = Color.FromArgb(24, 39, 61),
-            AutoSize = true,
-            Location = new Point(0, 0)
-        };
-        var subtitle = new Label
-        {
-            Text = "DIAGNÓSTICO DE RED",
-            Font = new Font("Segoe UI", 8.5F),
-            ForeColor = Color.FromArgb(112, 126, 145),
-            AutoSize = true,
-            Location = new Point(1, 34)
-        };
-        var helpButton = new Button
-        {
-            Text = "?",
-            Size = new Size(28, 28),
-            FlatStyle = FlatStyle.Flat,
-            Font = new Font("Segoe UI Semibold", 11F, FontStyle.Bold),
-            ForeColor = Color.FromArgb(57, 91, 145),
-            BackColor = Color.White,
-            Anchor = AnchorStyles.Top | AnchorStyles.Right,
-            Location = new Point(heading.ClientSize.Width - 32, 15),
-            Cursor = Cursors.Hand
-        };
+        _titleLabel.Text = $"{ApplicationName} · v{ApplicationVersion.ToString(3)}";
+        _titleLabel.Font = new Font("Segoe UI Semibold", 15F, FontStyle.Bold);
+        _titleLabel.ForeColor = Color.FromArgb(24, 39, 61);
+        _titleLabel.AutoSize = true;
+        _titleLabel.Location = new Point(0, 0);
+        _subtitleLabel.Text = "DIAGNÓSTICO DE RED";
+        _subtitleLabel.Font = new Font("Segoe UI", 8.5F);
+        _subtitleLabel.ForeColor = Color.FromArgb(112, 126, 145);
+        _subtitleLabel.AutoSize = true;
+        _subtitleLabel.Location = new Point(1, 34);
+        var title = _titleLabel;
+        var subtitle = _subtitleLabel;
+        var helpButton = _helpButton;
+        helpButton.Text = "?";
+        helpButton.Size = new Size(28, 28);
+        helpButton.FlatStyle = FlatStyle.Flat;
+        helpButton.Font = new Font("Segoe UI Semibold", 11F, FontStyle.Bold);
+        helpButton.ForeColor = Color.FromArgb(57, 91, 145);
+        helpButton.BackColor = Color.White;
+        helpButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        helpButton.Location = new Point(heading.ClientSize.Width - 32, 15);
+        helpButton.Cursor = Cursors.Hand;
         helpButton.FlatAppearance.BorderColor = Color.FromArgb(200, 211, 224);
         helpButton.FlatAppearance.BorderSize = 1;
-        _status.Text = "Listo para iniciar";
+        _status.Text = Localization.T("Listo para iniciar");
         _status.AutoSize = true;
         _status.ForeColor = Color.FromArgb(88, 104, 126);
         _status.Anchor = AnchorStyles.Top | AnchorStyles.Right;
@@ -177,16 +182,19 @@ internal sealed class MainForm : Form
         _exportCsvButton.AutoSize = true;
         _exportCsvButton.Height = 34;
         _exportCsvButton.Margin = new Padding(0, 0, 8, 0);
-        var openLogButton = new Button { Text = "Carpeta de sesiones", AutoSize = true, Height = 34, Margin = new Padding(0, 0, 0, 0) };
+        _openLogButton.Text = "Carpeta de sesiones";
+        _openLogButton.AutoSize = true;
+        _openLogButton.Height = 34;
+        _openLogButton.Margin = new Padding(0, 0, 0, 0);
         toolbar.Controls.AddRange([_startButton, _pauseButton, _resumeButton, _finishButton, _reportButton,
-            _exportReportButton, _exportCsvButton, openLogButton]);
+            _exportReportButton, _exportCsvButton, _openLogButton]);
         layout.Controls.Add(toolbar, 0, 3);
 
         var bottom = new BufferedTableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = new Padding(0, 6, 0, 0) };
         bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 43));
         bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 57));
         _diagnosis.Dock = DockStyle.Fill;
-        _diagnosis.Text = "Iniciá el monitoreo para medir la red.";
+        _diagnosis.Text = Localization.T("Iniciá el monitoreo para medir la red.");
         _diagnosis.Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold);
         _diagnosis.ForeColor = Color.FromArgb(49, 67, 89);
         _diagnosis.Padding = new Padding(12);
@@ -209,18 +217,16 @@ internal sealed class MainForm : Form
         _exportReportButton.Click += (_, _) => ExportReport();
         _exportCsvButton.Click += (_, _) => ExportCsv();
         _settingsButton.Click += (_, _) => ShowSettings();
-        openLogButton.Click += (_, _) => OpenLog();
+        _openLogButton.Click += (_, _) => OpenLog();
         helpButton.Click += (_, _) => ShowAbout();
     }
 
     private void ShowAbout()
     {
-        var message = $"{ApplicationName} · Beta {ApplicationVersion.ToString(3)}{Environment.NewLine}{Environment.NewLine}" +
-                      "Herramienta de diagnóstico de red para gaming. Mide la latencia y la pérdida de paquetes " +
-                      "hacia el router y destinos de Internet, muestra su evolución en tiempo real y ofrece " +
-                      $"estadísticas y un diagnóstico para ayudar a detectar problemas de conexión.{Environment.NewLine}{Environment.NewLine}" +
-                      "Las sesiones pueden pausarse, generar informes y exportarse a archivos de texto o CSV.";
-        MessageBox.Show(this, message, $"Acerca de {ApplicationName}", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        var message = $"{ApplicationName} · v{ApplicationVersion.ToString(3)}" +
+                      Environment.NewLine + Environment.NewLine +
+                      Localization.T("Herramienta de diagnóstico de red para gaming. Mide la latencia y la pérdida de paquetes hacia el router y destinos de Internet, muestra su evolución en tiempo real y ofrece estadísticas y un diagnóstico para ayudar a detectar problemas de conexión.\n\nLas sesiones pueden pausarse, generar informes y exportarse a archivos de texto o CSV.");
+        MessageBox.Show(this, message, Localization.F("Acerca de {0}", ApplicationName), MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     private void ConfigureGrid()
@@ -242,9 +248,11 @@ internal sealed class MainForm : Form
         _grid.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(230, 236, 243);
         _grid.ColumnHeadersDefaultCellStyle.ForeColor = Color.FromArgb(45, 62, 84);
         _grid.ColumnHeadersDefaultCellStyle.Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold);
+        _grid.ColumnHeadersDefaultCellStyle.Padding = new Padding(0, 0, 24, 0);
         _grid.DefaultCellStyle.SelectionBackColor = Color.FromArgb(226, 238, 250);
         _grid.DefaultCellStyle.SelectionForeColor = Color.FromArgb(24, 39, 61);
         _grid.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(249, 251, 253);
+        _grid.ShowCellToolTips = true;
         _grid.Columns.Add("target", "Destino");
         _grid.Columns.Add("samples", "Muestras");
         _grid.Columns.Add("average", "Prom. ms");
@@ -255,7 +263,203 @@ internal sealed class MainForm : Form
         _grid.Columns.Add("jitter", "Jitter");
         _grid.Columns.Add("spikes", "Picos ≥80 ms");
         _grid.Columns.Add("loss", "Pérdida");
+        foreach (DataGridViewColumn column in _grid.Columns)
+        {
+            column.SortMode = DataGridViewColumnSortMode.Programmatic;
+        }
         _grid.Columns["target"]!.FillWeight = 145;
+        RefreshGridHeaders();
+        _grid.CellPainting += PaintColumnHeaderHelp;
+        _grid.ColumnHeaderMouseClick += OnColumnHeaderMouseClick;
+    }
+
+    private void ApplyLocalization()
+    {
+        Text = Localization.T("Diagnóstico de red para gaming");
+        _settingsButton.Text = Localization.T("Configuración");
+        _titleLabel.Text = $"{ApplicationName} · v{ApplicationVersion.ToString(3)}";
+        _subtitleLabel.Text = Localization.T("DIAGNÓSTICO DE RED");
+        _startButton.Text = Localization.T("Iniciar");
+        _pauseButton.Text = Localization.T("Pausar");
+        _resumeButton.Text = Localization.T("Continuar");
+        _finishButton.Text = Localization.T("Finalizar");
+        _reportButton.Text = Localization.T("Informe parcial");
+        _exportReportButton.Text = Localization.T("Exportar informe");
+        _exportCsvButton.Text = Localization.T("Exportar CSV");
+        _openLogButton.Text = Localization.T("Carpeta de sesiones");
+        _status.Text = Localization.T(_status.Text);
+        RefreshGridHeaders();
+        _chart.ApplyLocalization();
+        if (_session is not null)
+        {
+            UpdateDashboard(_session.CurrentSnapshot());
+        }
+        else if (_lastSnapshot is not null)
+        {
+            UpdateDashboard(_lastSnapshot);
+        }
+        else if (_lastReport is null)
+        {
+            _diagnosis.Text = Localization.T("Iniciá el monitoreo para medir la red.");
+            _details.Clear();
+        }
+    }
+
+    private void RefreshGridHeaders()
+    {
+        var headers = new (string Column, string Text, string Help)[]
+        {
+            ("target", "Destino", "Router o destino medido (por IP o nombre configurado)."),
+            ("samples", "Muestras", "Cantidad de mediciones realizadas, incluidas las que no tuvieron respuesta."),
+            ("average", "Prom. ms", "Promedio de latencia de las respuestas recibidas, en milisegundos."),
+            ("median", "Mediana", "Valor central de latencia: la mitad de las respuestas fue más rápida y la mitad más lenta."),
+            ("p95", "P95", "El 95% de las respuestas tuvo esta latencia o menos; ayuda a ver picos frecuentes."),
+            ("p99", "P99", "El 99% de las respuestas tuvo esta latencia o menos; refleja la cola de picos altos."),
+            ("maximum", "Máx.", "Mayor latencia observada entre las respuestas recibidas."),
+            ("jitter", "Jitter", "Variación media entre mediciones consecutivas exitosas; valores altos indican una conexión menos estable."),
+            ("spikes", "Picos ≥80 ms", "Cantidad de respuestas con latencia de 80 ms o más; incluye los picos de 120 ms o más."),
+            ("loss", "Pérdida", "Porcentaje de sondas sin respuesta. En TCP se cuentan fallos de conexión, no paquetes perdidos.")
+        };
+        foreach (var (column, text, help) in headers)
+        {
+            if (_grid.Columns[column] is { } gridColumn)
+            {
+                gridColumn.HeaderText = Localization.T(text);
+                gridColumn.ToolTipText = Localization.T(help);
+            }
+        }
+    }
+
+    private void PaintColumnHeaderHelp(object? sender, DataGridViewCellPaintingEventArgs e)
+    {
+        if (e.RowIndex != -1 || e.ColumnIndex < 0)
+        {
+            return;
+        }
+
+        e.Paint(e.ClipBounds, DataGridViewPaintParts.All);
+        var graphics = e.Graphics;
+        if (graphics is null)
+        {
+            return;
+        }
+
+        var size = 16;
+        var bounds = new Rectangle(e.CellBounds.Right - size - 5, e.CellBounds.Top + (e.CellBounds.Height - size) / 2, size, size);
+        using var background = new SolidBrush(Color.White);
+        using var border = new Pen(Color.FromArgb(165, 184, 207));
+        using var font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold);
+        graphics.FillEllipse(background, bounds);
+        graphics.DrawEllipse(border, bounds);
+        var questionSize = TextRenderer.MeasureText("?", font);
+        TextRenderer.DrawText(graphics, "?", font, new Point(
+            bounds.Left + (bounds.Width - questionSize.Width) / 2,
+            bounds.Top + (bounds.Height - questionSize.Height) / 2), Color.FromArgb(57, 91, 145));
+        e.Handled = true;
+    }
+
+    private void OnColumnHeaderMouseClick(object? sender, DataGridViewCellMouseEventArgs e)
+    {
+        if (e.ColumnIndex < 0)
+        {
+            return;
+        }
+
+        var headerBounds = _grid.GetCellDisplayRectangle(e.ColumnIndex, -1, false);
+        var helpBounds = new Rectangle(headerBounds.Right - 21, headerBounds.Top + (headerBounds.Height - 16) / 2, 16, 16);
+        if (helpBounds.Contains(e.Location))
+        {
+            ShowColumnExplanation(e.ColumnIndex);
+            return;
+        }
+
+        if (_sortedColumnIndex == e.ColumnIndex)
+        {
+            _sortDirection = _sortDirection == ListSortDirection.Ascending
+                ? ListSortDirection.Descending
+                : ListSortDirection.Ascending;
+        }
+        else
+        {
+            _sortedColumnIndex = e.ColumnIndex;
+            _sortDirection = ListSortDirection.Ascending;
+        }
+
+        ApplyGridSort();
+    }
+
+    private void ApplyGridSort()
+    {
+        if (_sortedColumnIndex is not int columnIndex || _grid.Rows.Count == 0)
+        {
+            return;
+        }
+
+        foreach (DataGridViewColumn column in _grid.Columns)
+        {
+            column.HeaderCell.SortGlyphDirection = SortOrder.None;
+        }
+
+        var sortColumn = _grid.Columns[columnIndex];
+        _grid.Sort(new GridRowComparer(sortColumn.Name, _sortDirection));
+        sortColumn.HeaderCell.SortGlyphDirection = _sortDirection == ListSortDirection.Ascending
+            ? SortOrder.Ascending
+            : SortOrder.Descending;
+    }
+
+    private sealed class GridRowComparer(string columnName, ListSortDirection direction) : IComparer
+    {
+        public int Compare(object? x, object? y)
+        {
+            if (x is not DataGridViewRow first || y is not DataGridViewRow second)
+            {
+                return 0;
+            }
+
+            var firstValue = first.Cells[columnName].Value;
+            var secondValue = second.Cells[columnName].Value;
+            var comparison = columnName switch
+            {
+                "target" => StringComparer.CurrentCultureIgnoreCase.Compare(
+                    Convert.ToString(firstValue, CultureInfo.CurrentCulture),
+                    Convert.ToString(secondValue, CultureInfo.CurrentCulture)),
+                _ => CompareNumbers(firstValue, secondValue)
+            };
+
+            return direction == ListSortDirection.Ascending ? comparison : -comparison;
+        }
+
+        private static int CompareNumbers(object? first, object? second)
+        {
+            var firstNumber = ParseNumber(first);
+            var secondNumber = ParseNumber(second);
+            return Nullable.Compare(firstNumber, secondNumber);
+        }
+
+        private static double? ParseNumber(object? value)
+        {
+            if (value is null)
+            {
+                return null;
+            }
+
+            var text = Convert.ToString(value, CultureInfo.CurrentCulture)?.TrimEnd('%');
+            return double.TryParse(text, NumberStyles.Number, CultureInfo.CurrentCulture, out var number)
+                ? number
+                : null;
+        }
+    }
+
+    private void ShowColumnExplanation(int columnIndex)
+    {
+        if (columnIndex < 0 || columnIndex >= _grid.Columns.Count)
+        {
+            return;
+        }
+
+        var column = _grid.Columns[columnIndex];
+        MessageBox.Show(this, column.ToolTipText, column.HeaderText.Replace(" (?)", string.Empty, StringComparison.Ordinal),
+            MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     private static void ConfigureButton(Button button, string text, Color color)
@@ -275,7 +479,7 @@ internal sealed class MainForm : Form
     private async Task StartMonitoringAsync()
     {
         _startButton.Enabled = false;
-        _status.Text = "Detectando router y ruta al ISP…";
+        _status.Text = Localization.T("Detectando router y ruta al ISP…");
         _samplingCancellation = new CancellationTokenSource();
         try
         {
@@ -289,13 +493,13 @@ internal sealed class MainForm : Form
             _grid.Rows.Clear();
             _chart.StartSession(_session.StartedAt);
             _details.Clear();
-            AppendLog($"--- NUEVA SESIÓN: {DateTime.Now:yyyy-MM-dd HH:mm:ss} ---{Environment.NewLine}" +
-                      $"Conexión: {_session.Connection.Type} ({_session.Connection.Detail}) | Router: {_session.RouterAddress} | " +
-                      $"Primer salto ISP: {_session.IspAddress ?? "no detectado"}{Environment.NewLine}" +
-                      $"Registro: {_sessionLogPath}{Environment.NewLine}" +
-                      $"Datos CSV: {_sessionCsvPath}{Environment.NewLine}");
-            AppendCsv("hora_local,destino,protocolo,direccion,puerto,latencia_ms,resultado");
-            _status.Text = $"Router {_session.RouterAddress} | ISP {_session.IspAddress ?? "no detectado"}";
+            AppendLog($"--- {Localization.T("NUEVA SESIÓN")}: {DateTime.Now:yyyy-MM-dd HH:mm:ss} ---{Environment.NewLine}" +
+                      $"{Localization.T("Conexión")}: {Localization.T(_session.Connection.Type)} ({_session.Connection.Detail}) | {Localization.T("Router")}: {_session.RouterAddress} | " +
+                      $"{Localization.T("ISP (primer salto)")}: {_session.IspAddress ?? Localization.T("no detectado")}{Environment.NewLine}" +
+                      $"{Localization.T("Etiqueta del registro")}: {_sessionLogPath}{Environment.NewLine}" +
+                      $"{Localization.T("Datos CSV")}: {_sessionCsvPath}{Environment.NewLine}");
+            AppendCsv(string.Join(",", new[] { "csv.hora_local", "csv.destino", "csv.protocolo", "csv.direccion", "csv.puerto", "csv.latencia_ms", "csv.resultado" }.Select(Localization.T)));
+            _status.Text = Localization.F("Router {0} | ISP {1}", _session.RouterAddress, _session.IspAddress ?? Localization.T("no detectado"));
             SetMonitoringControls(true, false);
             await SampleOnceAsync();
             if (_session is not null && !_closing)
@@ -308,7 +512,7 @@ internal sealed class MainForm : Form
             _samplingCancellation?.Dispose();
             _samplingCancellation = null;
             _session = null;
-            _status.Text = "Inicio cancelado";
+            _status.Text = Localization.T("Inicio cancelado");
             SetMonitoringControls(false, false);
         }
         catch (Exception exception)
@@ -316,9 +520,9 @@ internal sealed class MainForm : Form
             _samplingCancellation?.Dispose();
             _samplingCancellation = null;
             _session = null;
-            _status.Text = "No se pudo iniciar";
+            _status.Text = Localization.T("No se pudo iniciar");
             SetMonitoringControls(false, false);
-            MessageBox.Show(this, exception.Message, "Error al iniciar el diagnóstico", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(this, Localization.T(exception.Message), Localization.T("Error al iniciar el diagnóstico"), MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -377,9 +581,9 @@ internal sealed class MainForm : Form
         catch (Exception exception)
         {
             _timer.Stop();
-            _status.Text = "Error durante la medición";
+            _status.Text = Localization.T("Error durante la medición");
             SetMonitoringControls(true, true);
-            MessageBox.Show(this, exception.Message, "Error durante el diagnóstico", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(this, Localization.T(exception.Message), Localization.T("Error durante el diagnóstico"), MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
         finally
         {
@@ -389,25 +593,34 @@ internal sealed class MainForm : Form
 
     private void UpdateDashboard(MonitorSnapshot snapshot)
     {
+        _lastSnapshot = snapshot;
         _grid.SuspendLayout();
         try
         {
-            while (_grid.Rows.Count < snapshot.Targets.Count)
+            var currentTargetKeys = snapshot.Targets
+                .Select(target => target.Target.Key)
+                .ToHashSet(StringComparer.Ordinal);
+            for (var rowIndex = _grid.Rows.Count - 1; rowIndex >= 0; rowIndex--)
             {
-                _grid.Rows.Add();
+                if (_grid.Rows[rowIndex].Tag is string targetKey && !currentTargetKeys.Contains(targetKey))
+                {
+                    _grid.Rows.RemoveAt(rowIndex);
+                }
             }
 
-            while (_grid.Rows.Count > snapshot.Targets.Count)
+            foreach (var target in snapshot.Targets)
             {
-                _grid.Rows.RemoveAt(_grid.Rows.Count - 1);
-            }
-
-            for (var index = 0; index < snapshot.Targets.Count; index++)
-            {
-                var target = snapshot.Targets[index];
                 var stats = target.Statistics;
-                var row = _grid.Rows[index];
-                row.Cells["target"].Value = target.Target.Name;
+                var row = _grid.Rows.Cast<DataGridViewRow>()
+                    .FirstOrDefault(existing => string.Equals(existing.Tag as string, target.Target.Key, StringComparison.Ordinal));
+                if (row is null)
+                {
+                    var rowIndex = _grid.Rows.Add();
+                    row = _grid.Rows[rowIndex];
+                    row.Tag = target.Target.Key;
+                }
+
+                row.Cells["target"].Value = Localization.T(target.Target.Name);
                 row.Cells["samples"].Value = stats.Samples;
                 row.Cells["average"].Value = stats.Average.ToString("F1");
                 row.Cells["median"].Value = stats.Median;
@@ -434,15 +647,16 @@ internal sealed class MainForm : Form
         var lossHeader = snapshot.Targets.Any(target => target.Target.Type == ProbeType.Tcp)
             ? "Pérdida / fallos TCP"
             : "Pérdida";
-        if (_grid.Columns["loss"]!.HeaderText != lossHeader)
+        _grid.Columns["loss"]!.HeaderText = Localization.T(lossHeader);
+        if (_sortedColumnIndex.HasValue)
         {
-            _grid.Columns["loss"]!.HeaderText = lossHeader;
+            ApplyGridSort();
         }
 
         _chart.AddSample(DateTime.Now, snapshot.LastMeasurements, snapshot.Targets);
         var diagnosis = snapshot.Diagnosis;
-        var diagnosisText = $"{diagnosis.Title}{Environment.NewLine}{diagnosis.Explanation}" +
-                            (diagnosis.Reasons.Count == 0 ? "" : $"{Environment.NewLine}{Environment.NewLine}• {string.Join($"{Environment.NewLine}• ", diagnosis.Reasons.Take(4))}");
+        var diagnosisText = $"{Localization.T(diagnosis.Title)}{Environment.NewLine}{Localization.T(diagnosis.Explanation)}" +
+                            (diagnosis.Reasons.Count == 0 ? "" : $"{Environment.NewLine}{Environment.NewLine}• {string.Join($"{Environment.NewLine}• ", diagnosis.Reasons.Take(4).Select(Localization.T))}");
         if (_diagnosis.Text != diagnosisText)
         {
             _diagnosis.Text = diagnosisText;
@@ -461,22 +675,22 @@ internal sealed class MainForm : Form
         }
         var enabledProfiles = _settings.GameProfiles.Where(profile => profile.Enabled).ToArray();
         var gameStatus = enabledProfiles.Length == 0
-            ? "Juegos: sin perfiles activados."
+            ? Localization.T("Juegos: sin perfiles activados.")
             : snapshot.ActiveGameEndpoints.Count == 0
-                ? $"Juegos: esperando conexiones TCP de {string.Join(", ", enabledProfiles.Select(profile => profile.Name))}."
-                : $"Conexiones observadas: {string.Join(", ", snapshot.ActiveGameEndpoints.Select(endpoint => $"{endpoint.ProfileName} ({endpoint.Address}:{endpoint.Port})"))}.";
+                ? Localization.F("Juegos: esperando conexiones TCP de {0}.", string.Join(", ", enabledProfiles.Select(profile => profile.Name)))
+                : Localization.F("Conexiones observadas: {0}.", string.Join(", ", snapshot.ActiveGameEndpoints.Select(endpoint => $"{endpoint.ProfileName} ({endpoint.Address}:{endpoint.Port})")));
         _details.SetTextWithoutFlicker(
-            $"Duración: {FormatDuration(snapshot.Duration)} | Línea base: " +
-            (snapshot.SamplesUntilBaseline == 0 ? "lista" : $"en {snapshot.SamplesUntilBaseline} muestras") +
-            $"{Environment.NewLine}{gameStatus}{Environment.NewLine}{Environment.NewLine}Eventos recientes{Environment.NewLine}" +
-            (snapshot.RecentEvents.Count == 0 ? "Sin pérdidas ni picos ≥120 ms." : string.Join(Environment.NewLine, snapshot.RecentEvents.TakeLast(10))));
+            Localization.F("Duración: {0} | Línea base: {1}", FormatDuration(snapshot.Duration),
+                snapshot.SamplesUntilBaseline == 0 ? Localization.T("lista") : Localization.F("en {0} muestras", snapshot.SamplesUntilBaseline)) +
+            $"{Environment.NewLine}{gameStatus}{Environment.NewLine}{Environment.NewLine}{Localization.T("Eventos recientes")}{Environment.NewLine}" +
+            (snapshot.RecentEvents.Count == 0 ? Localization.T("Sin pérdidas ni picos ≥120 ms.") : string.Join(Environment.NewLine, snapshot.RecentEvents.TakeLast(10).Select(Localization.T))));
     }
 
     private static string FormatDuration(TimeSpan duration)
     {
         var totalHours = (int)duration.TotalHours;
         return duration.TotalDays >= 1
-                        ? $"{(int)duration.TotalDays}d {duration.Hours:00}:{duration.Minutes:00}:{duration.Seconds:00}"
+                        ? $"{(int)duration.TotalDays}{Localization.T("d")} {duration.Hours:00}:{duration.Minutes:00}:{duration.Seconds:00}"
                         : $"{totalHours:00}:{duration.Minutes:00}:{duration.Seconds:00}";
     }
 
@@ -487,7 +701,7 @@ internal sealed class MainForm : Form
             .Select(target =>
             {
                 var value = snapshot.LastMeasurements[target.Target.Key];
-                return $"{target.Target.Name}: {(value < 0 ? "sin respuesta" : $"{value} ms")}";
+                return $"{Localization.T(target.Target.Name)}: {(value < 0 ? Localization.T("sin respuesta") : $"{value} {Localization.T("ms")}")}";
             });
         return $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {string.Join(" | ", values)}{Environment.NewLine}";
     }
@@ -495,7 +709,7 @@ internal sealed class MainForm : Form
     private void PauseMonitoring()
     {
         _timer.Stop();
-        _status.Text = "Monitoreo pausado";
+        _status.Text = Localization.T("Monitoreo pausado");
         SetMonitoringControls(true, true);
     }
 
@@ -506,7 +720,7 @@ internal sealed class MainForm : Form
             return;
         }
 
-        _status.Text = "Monitoreo activo";
+        _status.Text = Localization.T("Monitoreo activo");
         SetMonitoringControls(true, false);
         _timer.Start();
     }
@@ -529,7 +743,7 @@ internal sealed class MainForm : Form
 
         cancellation?.Dispose();
         _samplingCancellation = null;
-        _status.Text = "Monitoreo finalizado";
+        _status.Text = Localization.T("Monitoreo finalizado");
         SetMonitoringControls(false, false);
     }
 
@@ -559,8 +773,8 @@ internal sealed class MainForm : Form
         }
         catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception or IOException or UnauthorizedAccessException)
         {
-            MessageBox.Show(this, $"No se pudo abrir el registro:{Environment.NewLine}{exception.Message}",
-                "Error al abrir el registro", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(this, $"{Localization.T("No se pudo abrir el registro")}:{Environment.NewLine}{Localization.T(exception.Message)}",
+                Localization.T("Error al abrir el registro"), MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -583,9 +797,9 @@ internal sealed class MainForm : Form
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             _loggingAvailable = false;
-            _status.Text = "No se pudo escribir el registro";
-            MessageBox.Show(this, $"El monitoreo sigue, pero no se pudo guardar el registro en:{Environment.NewLine}{_sessionLogPath}{Environment.NewLine}{Environment.NewLine}{exception.Message}",
-                "Error de registro", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            _status.Text = Localization.T("No se pudo escribir el registro");
+            MessageBox.Show(this, $"{Localization.T("El monitoreo sigue, pero no se pudo guardar el registro en:")}{Environment.NewLine}{_sessionLogPath}{Environment.NewLine}{Environment.NewLine}{Localization.T(exception.Message)}",
+                Localization.T("Error de registro"), MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -603,8 +817,8 @@ internal sealed class MainForm : Form
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             _csvAvailable = false;
-            MessageBox.Show(this, $"El monitoreo sigue, pero no se pudo guardar el CSV:{Environment.NewLine}{_sessionCsvPath}{Environment.NewLine}{Environment.NewLine}{exception.Message}",
-                "Error al guardar CSV", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(this, $"{Localization.T("El monitoreo sigue, pero no se pudo guardar el CSV:")}{Environment.NewLine}{_sessionCsvPath}{Environment.NewLine}{Environment.NewLine}{Localization.T(exception.Message)}",
+                Localization.T("Error al guardar CSV"), MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -615,13 +829,13 @@ internal sealed class MainForm : Form
             .Select(target =>
         {
             var value = snapshot.LastMeasurements[target.Target.Key];
-            var result = value < 0 ? "sin respuesta" : "correcto";
+            var result = value < 0 ? Localization.T("sin respuesta") : Localization.T("correcto");
             return string.Join(",",
                 CsvField(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture)),
                 CsvField(target.Target.Name),
                 CsvField(target.Target.GameProfileId is null
                     ? target.Target.Type.ToString()
-                    : "ICMP (referencia de ruta, no ping real de juego)"),
+                    : Localization.T("ICMP (referencia de ruta, no ping real de juego)")),
                 CsvField(target.Target.Address),
                 target.Target.ObservedPort?.ToString(CultureInfo.InvariantCulture) ??
                 (target.Target.Type == ProbeType.Tcp ? target.Target.Port.ToString(CultureInfo.InvariantCulture) : ""),
@@ -641,7 +855,9 @@ internal sealed class MainForm : Form
         }
 
         _settings = dialog.Settings;
-        _status.Text = "Configuración guardada; se aplicará en la próxima sesión";
+        Localization.SetLanguage(_settings.Language);
+        ApplyLocalization();
+        _status.Text = Localization.T("Configuración guardada; se aplicará en la próxima sesión");
     }
 
     private void ExportReport()
@@ -649,14 +865,14 @@ internal sealed class MainForm : Form
         var report = _session?.BuildReport("exportado") ?? _lastReport;
         if (string.IsNullOrWhiteSpace(report))
         {
-            MessageBox.Show(this, "Todavía no hay un informe para exportar.", "Exportar informe",
+            MessageBox.Show(this, Localization.T("Todavía no hay un informe para exportar."), Localization.T("Exportar informe"),
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
         using var dialog = new SaveFileDialog
         {
-            Filter = "Informe de texto (*.txt)|*.txt",
+            Filter = Localization.T("Informe de texto (*.txt)|*.txt"),
             FileName = $"diagnostico_{DateTime.Now:yyyyMMdd_HHmmss}.txt",
             InitialDirectory = _settings.LogDirectory
         };
@@ -671,7 +887,7 @@ internal sealed class MainForm : Form
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            MessageBox.Show(this, exception.Message, "No se pudo exportar el informe", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(this, Localization.T(exception.Message), Localization.T("No se pudo exportar el informe"), MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -679,14 +895,14 @@ internal sealed class MainForm : Form
     {
         if (_sessionCsvPath is null || !File.Exists(_sessionCsvPath))
         {
-            MessageBox.Show(this, "Todavía no hay datos CSV para exportar. Iniciá una sesión y esperá la primera medición.",
-                "Exportar CSV", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, Localization.T("Todavía no hay datos CSV para exportar. Iniciá una sesión y esperá la primera medición."),
+                Localization.T("Exportar CSV"), MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
         using var dialog = new SaveFileDialog
         {
-            Filter = "Datos CSV (*.csv)|*.csv",
+            Filter = Localization.T("Datos CSV (*.csv)|*.csv"),
             FileName = Path.GetFileName(_sessionCsvPath),
             InitialDirectory = _settings.CsvDirectory
         };
@@ -701,7 +917,7 @@ internal sealed class MainForm : Form
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            MessageBox.Show(this, exception.Message, "No se pudo exportar el CSV", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(this, Localization.T(exception.Message), Localization.T("No se pudo exportar el CSV"), MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -819,7 +1035,7 @@ internal sealed class ReportForm : Form
 {
     public ReportForm(string report)
     {
-        Text = "Informe de diagnóstico";
+        Text = Localization.T("Informe de diagnóstico");
         Size = new Size(900, 700);
         StartPosition = FormStartPosition.CenterParent;
         MinimumSize = new Size(650, 450);
@@ -833,8 +1049,8 @@ internal sealed class ReportForm : Form
             Text = report,
             BackColor = Color.White
         };
-        var copy = new Button { Text = "Copiar informe", AutoSize = true, Height = 34, Margin = new Padding(0, 6, 8, 6) };
-        var close = new Button { Text = "Cerrar", AutoSize = true, Height = 34, Margin = new Padding(0, 6, 8, 6) };
+        var copy = new Button { Text = Localization.T("Copiar informe"), AutoSize = true, Height = 34, Margin = new Padding(0, 6, 8, 6) };
+        var close = new Button { Text = Localization.T("Cerrar"), AutoSize = true, Height = 34, Margin = new Padding(0, 6, 8, 6) };
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 46, FlowDirection = FlowDirection.RightToLeft };
         buttons.Controls.Add(close);
         buttons.Controls.Add(copy);
@@ -875,11 +1091,11 @@ internal sealed class LatencyChart : Control
     {
         DoubleBuffered = true;
         SetStyle(ControlStyles.ResizeRedraw, true);
-        _viewMenu.Items.Add("Toda la sesión", null, (_, _) => SetViewDuration(null));
-        _viewMenu.Items.Add("Últimos 5 minutos", null, (_, _) => SetViewDuration(TimeSpan.FromMinutes(5)));
-        _viewMenu.Items.Add("Últimos 15 minutos", null, (_, _) => SetViewDuration(TimeSpan.FromMinutes(15)));
-        _viewMenu.Items.Add("Última hora", null, (_, _) => SetViewDuration(TimeSpan.FromHours(1)));
-        _viewMenu.Items.Add("Últimas 6 horas", null, (_, _) => SetViewDuration(TimeSpan.FromHours(6)));
+        _viewMenu.Items.Add(Localization.T("Toda la sesión"), null, (_, _) => SetViewDuration(null));
+        _viewMenu.Items.Add(Localization.T("Últimos 5 minutos"), null, (_, _) => SetViewDuration(TimeSpan.FromMinutes(5)));
+        _viewMenu.Items.Add(Localization.T("Últimos 15 minutos"), null, (_, _) => SetViewDuration(TimeSpan.FromMinutes(15)));
+        _viewMenu.Items.Add(Localization.T("Última hora"), null, (_, _) => SetViewDuration(TimeSpan.FromHours(1)));
+        _viewMenu.Items.Add(Localization.T("Últimas 6 horas"), null, (_, _) => SetViewDuration(TimeSpan.FromHours(6)));
         ContextMenuStrip = _viewMenu;
         MouseMove += ShowHoveredSeries;
         MouseLeave += (_, _) =>
@@ -890,6 +1106,22 @@ internal sealed class LatencyChart : Control
     }
 
     private readonly HashSet<string> _gameSeriesKeys = new(StringComparer.Ordinal);
+
+    public void ApplyLocalization()
+    {
+        _viewMenu.Items[0].Text = Localization.T("Toda la sesión");
+        _viewMenu.Items[1].Text = Localization.T("Últimos 5 minutos");
+        _viewMenu.Items[2].Text = Localization.T("Últimos 15 minutos");
+        _viewMenu.Items[3].Text = Localization.T("Última hora");
+        _viewMenu.Items[4].Text = Localization.T("Últimas 6 horas");
+        foreach (var key in new[] { "router", "cloudflare-icmp", "google-icmp" })
+        {
+            var label = _labels[key];
+            _labels[key] = (Localization.T(label.Name), label.Color);
+        }
+
+        Invalidate();
+    }
 
     public void StartSession(DateTime startedAt)
     {
@@ -944,7 +1176,7 @@ internal sealed class LatencyChart : Control
             values.Add(new SamplePoint(timestamp, value));
             if (value is null || value >= 120)
             {
-                _events.Add(new ChartEvent(timestamp, $"{_labels[key].Name}: {(value is null ? "sin respuesta" : $"{value} ms")}"));
+                _events.Add(new ChartEvent(timestamp, $"{_labels[key].Name}: {(value is null ? Localization.T("sin respuesta") : $"{value} {Localization.T("ms")}")}"));
                 if (_events.Count > MaximumEventMarkers)
                 {
                     _events.RemoveAt(0);
@@ -979,8 +1211,8 @@ internal sealed class LatencyChart : Control
             : sessionStart;
         var durationSeconds = Math.Max(0.001, (now - viewStart).TotalSeconds);
         var latencyScale = GetLatencyScale();
-        var viewName = _viewDuration.HasValue ? $"últimos {FormatViewDuration(_viewDuration.Value)}" : "toda la sesión";
-        graphics.DrawString($"Latencia ICMP en vivo ({viewName}; clic derecho para cambiar vista; escala 0-{latencyScale} ms)",
+        var viewName = _viewDuration.HasValue ? Localization.F("últimos {0}", FormatViewDuration(_viewDuration.Value)) : Localization.T("Toda la sesión");
+        graphics.DrawString(Localization.F("Latencia ICMP en vivo ({0}; clic derecho para cambiar vista; escala 0-{1} ms)", viewName, latencyScale),
             titleFont, textBrush, 12, 10);
 
         var plot = GetPlotRectangle();
@@ -998,8 +1230,8 @@ internal sealed class LatencyChart : Control
         foreach (var (key, label) in _labels.Where(item => IsSeriesEnabled(item.Key)))
         {
             using var legendBrush = new SolidBrush(label.Color);
-            graphics.FillEllipse(legendBrush, legendX, 26, 8, 8);
-            graphics.DrawString(label.Name, font, textBrush, legendX + 12, 22);
+            graphics.FillEllipse(legendBrush, legendX, 33, 8, 8);
+            graphics.DrawString(label.Name, font, textBrush, legendX + 12, 29);
             legendX += 95;
             var values = _series[key];
             var points = new List<PointF>();
@@ -1161,8 +1393,8 @@ internal sealed class LatencyChart : Control
                 closestDistance = distance;
                 var label = _labels[key].Name;
                 var latency = Math.Round(first.Value.Value + (second.Value.Value - first.Value.Value) * fraction);
-                hoverText = $"{label} | Hora: {cursorTime:HH:mm:ss}{Environment.NewLine}" +
-                            $"Latencia aproximada: {latency} ms";
+                hoverText = $"{label} | {Localization.F("Hora: {0}", cursorTime.ToString("HH:mm:ss", Localization.Culture))}{Environment.NewLine}" +
+                            Localization.F("Latencia aproximada: {0} ms", latency);
             }
         }
 
@@ -1172,7 +1404,7 @@ internal sealed class LatencyChart : Control
             .FirstOrDefault();
         if (hoveredEvent is not null)
         {
-            hoverText = $"{hoveredEvent.Label} | Hora: {hoveredEvent.Timestamp:HH:mm:ss}{Environment.NewLine}Evento de latencia";
+            hoverText = $"{hoveredEvent.Label} | {Localization.F("Hora: {0}", hoveredEvent.Timestamp.ToString("HH:mm:ss", Localization.Culture))}{Environment.NewLine}{Localization.T("Evento de latencia")}";
         }
 
         if (hoverText is null)
@@ -1193,7 +1425,7 @@ internal sealed class LatencyChart : Control
     {
         const int left = 48;
         const int right = 16;
-        const int top = 42;
+        const int top = 50;
         const int bottom = 40;
         return new Rectangle(left, top, Math.Max(1, ClientSize.Width - left - right),
             Math.Max(1, ClientSize.Height - top - bottom));
@@ -1317,7 +1549,9 @@ internal sealed class LatencyChart : Control
 
     private static string FormatViewDuration(TimeSpan duration)
     {
-        return duration.TotalHours >= 1 ? $"{(int)duration.TotalHours} h" : $"{(int)duration.TotalMinutes} min";
+        return duration.TotalHours >= 1
+            ? $"{(int)duration.TotalHours} {Localization.T("h")}"
+            : $"{(int)duration.TotalMinutes} {Localization.T("min")}";
     }
 
     private static DateTime Max(DateTime first, DateTime second) => first > second ? first : second;
