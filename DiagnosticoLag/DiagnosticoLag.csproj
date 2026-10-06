@@ -17,6 +17,7 @@
     <EmbeddedResource Include="Translations\*.json">
       <LogicalName>DiagnosticoLag.Translations.%(Filename)%(Extension)</LogicalName>
     </EmbeddedResource>
+    <InternalsVisibleTo Include="DiagnosticoLag.Tests" />
   </ItemGroup>
 
   <Target Name="RebuildApplicationWhenIconChanges"

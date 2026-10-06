@@ -414,7 +414,7 @@ internal sealed class DiagnosticSession
             "", Array.Empty<string>());
     }
 
-    private static void AddInternetDiagnosis(
+    internal static void AddInternetDiagnosis(
         string name,
         string icmpKey,
         string tcpKey,
@@ -501,7 +501,7 @@ internal sealed class DiagnosticSession
         }
     }
 
-    private static bool HasFrequentSpikes(StatSummary stats)
+    internal static bool HasFrequentSpikes(StatSummary stats)
     {
         if (stats.Samples == 0)
         {
@@ -620,8 +620,16 @@ internal sealed class DiagnosticSession
             throw new IOException("La consulta de conexiones TCP excedió el tiempo límite.");
         }
 
+        return ParseGameEndpoints(outputTask.GetAwaiter().GetResult(), processNames, profiles);
+    }
+
+    internal static IReadOnlyList<GameObservedEndpoint> ParseGameEndpoints(
+        string output,
+        IReadOnlyDictionary<int, string> processNames,
+        IReadOnlyList<GameMonitoringProfile> profiles)
+    {
         var results = new List<GameObservedEndpoint>();
-        foreach (var line in outputTask.GetAwaiter().GetResult().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries))
+        foreach (var line in output.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries))
         {
             var match = Regex.Match(line, @"^\s*TCP\s+\S+\s+(?<remote>\S+)\s+ESTABLISHED\s+(?<pid>\d+)", RegexOptions.IgnoreCase);
             if (!match.Success || !int.TryParse(match.Groups["pid"].Value, out var pid) ||
@@ -661,7 +669,7 @@ internal sealed class DiagnosticSession
         return results;
     }
 
-    private static bool IsPrivateAddress(IPAddress address)
+    internal static bool IsPrivateAddress(IPAddress address)
     {
         if (IPAddress.IsLoopback(address))
         {

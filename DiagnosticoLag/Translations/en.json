@@ -229,5 +229,6 @@
   "Destino 2 (últimas 60 muestras)": "Target 2 (last 60 samples)",
   "El destino aproximado de LoL no responde a ICMP; es común que servidores de juego filtren ping.": "The approximate LoL target does not respond to ICMP; game servers commonly filter ping.",
   "No se pudo iniciar netstat para inspeccionar conexiones TCP activas.": "Could not start netstat to inspect active TCP connections.",
-  "La consulta de conexiones TCP excedió el tiempo límite.": "The TCP connection query timed out."
+  "La consulta de conexiones TCP excedió el tiempo límite.": "The TCP connection query timed out.",
+  "No se pudo iniciar la configuración": "The settings dialog could not be opened."
 }

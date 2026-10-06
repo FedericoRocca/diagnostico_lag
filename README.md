@@ -1,5 +1,7 @@
 # Lagnostics
 
+[![Automated tests](https://github.com/FedericoRocca/diagnostico_lag/actions/workflows/tests.yml/badge.svg)](https://github.com/FedericoRocca/diagnostico_lag/actions/workflows/tests.yml)
+
 Aplicación de escritorio para Windows que ayuda a diagnosticar latencia, pérdida de paquetes y microcortes durante sesiones de gaming. Mide el router, el primer salto del proveedor y destinos de Internet, y muestra estadísticas y evolución en tiempo real.
 
 <img width="1920" height="1020" alt="4" src="https://github.com/user-attachments/assets/a0b307ea-11e8-4908-add1-88fa9107759d" />
@@ -25,6 +27,12 @@ Cada encabezado de la grilla incluye un indicador **(?)**: al pasar el cursor se
 El código y los materiales originales de Lagnostics están protegidos por derechos de autor de Federico Rocca y se distribuyen bajo los términos de la [Licencia de atribución y modificación de Lagnostics](./LICENSE). Se permite usar y redistribuir gratis el software sin cambios o con modificaciones cosméticas, siempre conservando la atribución al autor y señalando los cambios. Las modificaciones sustanciales pueden hacerse para uso privado, pero para publicarlas, distribuirlas o explotarlas comercialmente se requiere una licencia comercial escrita del autor, con sus condiciones y cualquier tarifa acordadas previamente.
 
 Esta es una licencia personalizada de código disponible, no una licencia de código abierto aprobada por OSI. Los componentes de terceros conservan sus propias licencias.
+
+## Pruebas automatizadas
+
+La suite cubre estadísticas de latencia, validación y migración de configuración, traducciones y análisis de endpoints de juegos. Ejecutá `.\scripts\run-tests.ps1` antes de enviar cambios. El hook `pre-push` bloquea pushes locales si restore o las pruebas fallan; activalo una vez en el clon con `git config core.hooksPath .githooks`.
+
+GitHub Actions corre las pruebas en cada push, pull request y ejecución de release. El log muestra los casos que fallan y se publica el archivo TRX como artefacto de la ejecución. Para exigir la verificación también al integrar cambios en `main`, configurá en GitHub un ruleset o una protección de rama que requiera el check **Automated tests / test**.
 
 ## Distribución para Windows
 

@@ -1,0 +1,42 @@
+name: Automated tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore solution and test dependencies
+        run: dotnet restore DiagnosticoLag.sln
+
+      - name: Run automated tests
+        run: >-
+          dotnet test DiagnosticoLag.sln
+          --configuration Release
+          --no-restore
+          --logger "console;verbosity=normal"
+          --logger "trx;LogFileName=tests.trx"
+          --results-directory TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: automated-test-results
+          path: TestResults/*.trx
+          if-no-files-found: warn

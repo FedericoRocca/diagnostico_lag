@@ -20,6 +20,26 @@ jobs:
         with:
           dotnet-version: 8.0.x
 
+      - name: Restore solution and test dependencies
+        run: dotnet restore DiagnosticoLag.sln
+
+      - name: Run automated tests
+        run: >-
+          dotnet test DiagnosticoLag.sln
+          --configuration Release
+          --no-restore
+          --logger "console;verbosity=normal"
+          --logger "trx;LogFileName=tests.trx"
+          --results-directory artifacts/test-results
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-test-results
+          path: artifacts/test-results/*.trx
+          if-no-files-found: warn
+
       - name: Publish Windows x64 application
         shell: pwsh
         env:

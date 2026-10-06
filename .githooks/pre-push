@@ -1,0 +1,12 @@
+#!/usr/bin/env sh
+
+echo "Running the required Lagnostics automated test suite before push..."
+repository_root=$(git rev-parse --show-toplevel) || exit 1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$repository_root/scripts/run-tests.ps1"
+result=$?
+if [ "$result" -ne 0 ]; then
+  echo "Push blocked: automated tests did not pass." >&2
+  exit "$result"
+fi
+
+echo "Automated tests passed; push is allowed."

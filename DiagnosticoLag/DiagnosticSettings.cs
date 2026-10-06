@@ -15,6 +15,8 @@ internal sealed record GameMonitoringProfile(string Id, string Name, IReadOnlyLi
         new("league-of-legends", "League of Legends", ["League of Legends"], false);
 }
 
+internal sealed record DiagnosticSettingsReadResult(DiagnosticSettings Settings, bool NeedsSave);
+
 internal sealed record DiagnosticSettings(
     string CloudflareAddress,
     string GoogleAddress,
@@ -55,45 +57,53 @@ internal sealed record DiagnosticSettings(
         try
         {
             var json = File.ReadAllText(SettingsPath);
-            var settings = JsonSerializer.Deserialize<DiagnosticSettings>(json)
-                ?? throw new InvalidDataException(Localization.T("El archivo de configuración está vacío."));
-            using var document = JsonDocument.Parse(json);
-            var hasSavedLanguage = document.RootElement.TryGetProperty(nameof(Language), out _);
-            var hasValidLanguage = settings.Language is "es" or "en";
-            if (!document.RootElement.TryGetProperty(nameof(GameProfiles), out _))
+            var result = Parse(json, DetectInitialLanguage());
+            if (result.NeedsSave)
             {
-                var detectLeague = document.RootElement.TryGetProperty(nameof(DetectLeague), out var detectValue) &&
-                                   detectValue.ValueKind == JsonValueKind.True;
-                var legacyDiagnosis = document.RootElement.TryGetProperty(nameof(IncludeLeagueInDiagnosis), out var diagnosisValue) &&
-                                      diagnosisValue.ValueKind == JsonValueKind.True;
-                settings = settings with
-                {
-                    GameProfiles =
-                    [
-                        GameProfileSettingsWithEnabled(GameMonitoringProfile.LeagueOfLegends, detectLeague || legacyDiagnosis)
-                    ],
-                    DetectLeague = false,
-                    IncludeLeagueInDiagnosis = false
-                };
+                result.Settings.Save();
             }
 
-            if (!hasValidLanguage)
-            {
-                settings = settings with { Language = hasSavedLanguage ? "en" : DetectInitialLanguage() };
-            }
-
-            Validate(settings);
-            if (!hasSavedLanguage || !hasValidLanguage)
-            {
-                settings.Save();
-            }
-
-            return settings;
+            return result.Settings;
         }
         catch (JsonException exception)
         {
             throw new InvalidDataException(Localization.F("La configuración guardada no tiene un formato válido: {0}", SettingsPath), exception);
         }
+    }
+
+    internal static DiagnosticSettingsReadResult Parse(string json, string initialLanguage)
+    {
+        var settings = JsonSerializer.Deserialize<DiagnosticSettings>(json)
+            ?? throw new InvalidDataException(Localization.T("El archivo de configuración está vacío."));
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+        var hasSavedLanguage = root.TryGetProperty(nameof(Language), out _);
+        var hasValidLanguage = settings.Language is "es" or "en";
+        var hasGameProfiles = root.TryGetProperty(nameof(GameProfiles), out _);
+        if (!hasGameProfiles)
+        {
+            var detectLeague = root.TryGetProperty(nameof(DetectLeague), out var detectValue) &&
+                               detectValue.ValueKind == JsonValueKind.True;
+            var legacyDiagnosis = root.TryGetProperty(nameof(IncludeLeagueInDiagnosis), out var diagnosisValue) &&
+                                  diagnosisValue.ValueKind == JsonValueKind.True;
+            settings = settings with
+            {
+                GameProfiles =
+                [
+                    GameProfileSettingsWithEnabled(GameMonitoringProfile.LeagueOfLegends, detectLeague || legacyDiagnosis)
+                ],
+                DetectLeague = false,
+                IncludeLeagueInDiagnosis = false
+            };
+        }
+
+        if (!hasValidLanguage)
+        {
+            settings = settings with { Language = hasSavedLanguage ? "en" : initialLanguage };
+        }
+
+        Validate(settings);
+        return new DiagnosticSettingsReadResult(settings, !hasSavedLanguage || !hasValidLanguage);
     }
 
     public void Save()
@@ -114,7 +124,7 @@ internal sealed record DiagnosticSettings(
             .ToArray();
     }
 
-    private static void Validate(DiagnosticSettings settings)
+    internal static void Validate(DiagnosticSettings settings)
     {
         if (settings.SampleIntervalSeconds is < 1 or > 10)
         {

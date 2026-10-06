@@ -44,7 +44,11 @@ internal sealed class MainForm : Form
     private bool _csvAvailable = true;
     private bool _closing;
 
-    public MainForm()
+    public MainForm() : this(null)
+    {
+    }
+
+    internal MainForm(DiagnosticSettings? initialSettings)
     {
         _applicationIcon = LoadApplicationIcon();
         Icon = _applicationIcon;
@@ -54,14 +58,21 @@ internal sealed class MainForm : Form
         Font = new Font("Segoe UI", 9F);
         BackColor = Color.FromArgb(245, 247, 250);
 
-        try
+        if (initialSettings is not null)
         {
-            _settings = DiagnosticSettings.Load();
+            _settings = initialSettings;
         }
-        catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException)
+        else
         {
-            MessageBox.Show(this, $"{exception.Message}{Environment.NewLine}{Environment.NewLine}{Localization.T("Se usarán los valores predeterminados. Podés revisarlos en Configuración.")}",
-                Localization.T("No se pudo cargar la configuración"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            try
+            {
+                _settings = DiagnosticSettings.Load();
+            }
+            catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException)
+            {
+                MessageBox.Show(this, $"{exception.Message}{Environment.NewLine}{Environment.NewLine}{Localization.T("Se usarán los valores predeterminados. Podés revisarlos en Configuración.")}",
+                    Localization.T("No se pudo cargar la configuración"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
         }
 
         Localization.SetLanguage(_settings.Language);
