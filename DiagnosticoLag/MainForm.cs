@@ -1213,7 +1213,7 @@ internal sealed class SummaryChart : Control
     {
         _snapshot = snapshot;
         _kind = kind;
-        Height = Math.Max(190, 90 + snapshot.Targets.Count * 38);
+        Height = Math.Max(190, 88 + snapshot.Targets.Count * 48);
         Width = 920;
         Margin = new Padding(0, 6, 0, 8);
         BackColor = Color.White;
@@ -1264,10 +1264,10 @@ internal sealed class SummaryChart : Control
         {
             var target = _snapshot.Targets[index];
             var stats = target.Statistics;
-            var y = plotTop + 11 + index * 38;
-            var label = Localization.T(target.Target.Name);
+            var y = plotTop + 11 + index * 48;
+            var label = FormatTargetLabel(target);
             graphics.DrawString(label, textFont, textBrush,
-                new RectangleF(10, y - 2, plotLeft - 20, 26));
+                new RectangleF(10, y - 7, plotLeft - 20, 42));
             if (stats.Samples == 0)
             {
                 graphics.DrawString(Localization.T("Sin datos suficientes"), textFont, textBrush, plotLeft + 4, y);
@@ -1318,6 +1318,11 @@ internal sealed class SummaryChart : Control
 
         graphics.DrawString(label, font, textBrush, left + barWidth + 4, y - 4);
     }
+
+    internal static string FormatTargetLabel(TargetSnapshot target) =>
+        target.Target.GameProfileName is { } profileName
+            ? $"{Localization.T(profileName)}{Environment.NewLine}{target.Target.Address}"
+            : Localization.T(target.Target.Name);
 }
 
 internal sealed class LatencyChart : Control

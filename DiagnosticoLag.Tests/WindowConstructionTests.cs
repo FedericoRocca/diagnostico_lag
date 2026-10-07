@@ -52,6 +52,15 @@ public sealed class WindowConstructionTests
                 {
                     new TargetSnapshot(
                         new ProbeTarget("router", "Router/Modem", "192.168.0.1", ProbeType.Icmp),
+                        new StatSummary(30, 30, 0, 12, 10, 18, 22, 35, 2, 0, 0, 0)),
+                    new TargetSnapshot(
+                        new ProbeTarget(
+                            "game:lol",
+                            "League of Legends - ICMP aprox. a 203.0.113.42:443",
+                            "203.0.113.42",
+                            ProbeType.Icmp,
+                            GameProfileName: "League of Legends",
+                            ObservedPort: 443),
                         new StatSummary(30, 30, 0, 12, 10, 18, 22, 35, 2, 0, 0, 0))
                 },
                 new Dictionary<string, int>(),
@@ -73,6 +82,9 @@ public sealed class WindowConstructionTests
             var controls = Descendants(form).ToArray();
 
             Assert.Equal(2, controls.OfType<SummaryChart>().Count());
+            Assert.Equal($"League of Legends{Environment.NewLine}203.0.113.42",
+                SummaryChart.FormatTargetLabel(snapshot.Targets[1]));
+            Assert.All(controls.OfType<SummaryChart>(), chart => Assert.True(chart.Height >= 88 + snapshot.Targets.Count * 48));
             Assert.Contains(controls.OfType<TabPage>(), page => page.Text == "Resumen visual");
             Assert.Contains(controls.OfType<RichTextBox>(), box => box.Text == "Resumen final conservado.");
             Assert.Contains(controls.OfType<Label>(), label => label.Text.Contains("Puede señalar variabilidad local.", StringComparison.Ordinal));
