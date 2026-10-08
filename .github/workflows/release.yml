@@ -181,10 +181,36 @@ jobs:
             }
           }
 
+      - name: Build MSIX package for Microsoft Store
+        id: msix
+        shell: pwsh
+        env:
+          MSIX_IDENTITY_NAME: ${{ vars.MSIX_IDENTITY_NAME || 'MagusMan.Lagnostics-Diagnsticodelag' }}
+          MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER || 'CN=45FBBBAE-FC3F-4B9A-8217-90F751D885B5' }}
+          MSIX_PUBLISHER_DISPLAY_NAME: ${{ vars.MSIX_PUBLISHER_DISPLAY_NAME || 'MagusMan' }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:MSIX_IDENTITY_NAME) -or
+              [string]::IsNullOrWhiteSpace($env:MSIX_PUBLISHER) -or
+              [string]::IsNullOrWhiteSpace($env:MSIX_PUBLISHER_DISPLAY_NAME)) {
+            "built=false" >> $env:GITHUB_OUTPUT
+            Write-Host "::warning::MSIX_IDENTITY_NAME, MSIX_PUBLISHER or MSIX_PUBLISHER_DISPLAY_NAME repository variables are missing; skipping MSIX."
+            exit 0
+          }
+          $version = $env:RELEASE_TAG.TrimStart("v")
+          ./packaging/msix/Build-Msix.ps1 `
+            -Version $version `
+            -PublishDir (Resolve-Path "artifacts/publish").Path `
+            -IdentityName $env:MSIX_IDENTITY_NAME `
+            -Publisher $env:MSIX_PUBLISHER `
+            -PublisherDisplayName $env:MSIX_PUBLISHER_DISPLAY_NAME `
+            -OutputDir "artifacts/msix"
+          "built=true" >> $env:GITHUB_OUTPUT
+
       - name: Package and create GitHub release
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MSIX_BUILT: ${{ steps.msix.outputs.built }}
         run: |
           $executable = "artifacts/publish/DiagnosticoLag.exe"
           if (!(Test-Path $executable)) {
@@ -200,7 +226,12 @@ jobs:
           $releaseArgs = @(
             $env:RELEASE_TAG,
             $archive,
-            $installer,
+            $installer
+          )
+          if ($env:MSIX_BUILT -eq "true") {
+            $releaseArgs += (Get-ChildItem "artifacts/msix" -Filter *.msix | Select-Object -First 1 -ExpandProperty FullName)
+          }
+          $releaseArgs += @(
             "--title", "Diagnóstico Lag $env:RELEASE_TAG",
             "--generate-notes",
             "--verify-tag",

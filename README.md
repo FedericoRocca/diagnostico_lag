@@ -39,3 +39,5 @@ GitHub Actions corre las pruebas en cada push, pull request y ejecución de rele
 ## Distribución para Windows
 
 Las versiones publicadas están en [GitHub Releases](https://github.com/FedericoRocca/diagnostico_lag/releases). Cada release incluye el ZIP portable x64 y un instalador EXE autocontenido para Windows x64. El instalador se instala por usuario en `%LOCALAPPDATA%\Programs\Lagnostics`, agrega un acceso directo al menú Inicio y no requiere privilegios de administrador.
+
+Cada release también adjunta un paquete `Lagnostics-<versión>-x64.msix` sin firma, generado con `packaging/msix/Build-Msix.ps1`, para subirlo a Microsoft Store desde el Centro de partners (Store lo firma al publicar). La identidad del paquete se toma de las variables de repositorio `MSIX_IDENTITY_NAME`, `MSIX_PUBLISHER` y `MSIX_PUBLISHER_DISPLAY_NAME`, con los valores de la aplicación actual como predeterminados.
