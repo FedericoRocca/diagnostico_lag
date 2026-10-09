@@ -98,7 +98,7 @@ internal sealed class DiagnosticSession
     public static async Task<DiagnosticSession> CreateAsync(DiagnosticSettings settings, CancellationToken cancellationToken)
     {
         var startedAt = DateTime.Now;
-        var (router, connection) = DetectConnection(settings.NetworkInterfaceId);
+        var (router, connection) = await Task.Run(() => DetectConnection(settings.NetworkInterfaceId, settings.CloudflareAddress), cancellationToken);
         var isp = await FindIspFirstHopAsync(router, settings.CloudflareAddress, cancellationToken);
         return new DiagnosticSession(settings, router, isp, connection, startedAt);
     }
@@ -583,49 +583,122 @@ internal sealed class DiagnosticSession
 
     private static IReadOnlyList<GameObservedEndpoint> FindGameEndpoints(IReadOnlyList<GameMonitoringProfile> profiles)
     {
-        var processNames = new Dictionary<int, string>();
-        foreach (var process in Process.GetProcesses())
-        {
-            try
-            {
-                processNames[process.Id] = process.ProcessName;
-            }
-            catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
-            {
-                Trace.TraceWarning($"No se pudo inspeccionar un proceso durante la detección de juegos: {exception.Message}");
-            }
-            finally
-            {
-                process.Dispose();
-            }
-        }
-
-        if (processNames.Count == 0)
+        var connections = ReadEstablishedConnections()
+            .Where(connection => !IsPrivateAddress(connection.Address))
+            .ToList();
+        if (connections.Count == 0)
         {
             return Array.Empty<GameObservedEndpoint>();
         }
 
-        using var netstat = Process.Start(new ProcessStartInfo
+        var processNames = new Dictionary<int, string>();
+        foreach (var pid in connections.Select(connection => connection.Pid).Distinct())
         {
-            FileName = "netstat.exe",
-            Arguments = "-ano -p tcp",
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            CreateNoWindow = true
-        });
-        if (netstat is null)
-        {
-            throw new InvalidOperationException("No se pudo iniciar netstat para inspeccionar conexiones TCP activas.");
+            try
+            {
+                using var process = Process.GetProcessById(pid);
+                processNames[pid] = process.ProcessName;
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or ArgumentException or System.ComponentModel.Win32Exception)
+            {
+                Trace.TraceWarning($"No se pudo inspeccionar un proceso durante la detección de juegos: {exception.Message}");
+            }
         }
 
-        var outputTask = netstat.StandardOutput.ReadToEndAsync();
-        if (!netstat.WaitForExit(3000))
+        return MatchGameEndpoints(connections, processNames, profiles);
+    }
+
+    internal sealed record TcpConnection(int Pid, IPAddress Address, int Port);
+
+    private const int TcpTableOwnerPidAll = 5;
+    private const uint TcpStateEstablished = 5;
+
+    [DllImport("iphlpapi.dll", ExactSpelling = true)]
+    private static extern uint GetExtendedTcpTable(IntPtr table, ref int size, bool sort, int family, int tableClass, uint reserved);
+
+    private static IEnumerable<TcpConnection> ReadEstablishedConnections()
+    {
+        foreach (var connection in ReadTcpTable(AddressFamily.InterNetwork, 24))
         {
-            netstat.Kill();
-            throw new IOException("La consulta de conexiones TCP excedió el tiempo límite.");
+            yield return connection;
         }
 
-        return ParseGameEndpoints(outputTask.GetAwaiter().GetResult(), processNames, profiles);
+        foreach (var connection in ReadTcpTable(AddressFamily.InterNetworkV6, 56))
+        {
+            yield return connection;
+        }
+    }
+
+    private static List<TcpConnection> ReadTcpTable(AddressFamily family, int rowSize)
+    {
+        var familyValue = family == AddressFamily.InterNetwork ? 2 : 23;
+        var size = 0;
+        _ = GetExtendedTcpTable(IntPtr.Zero, ref size, false, familyValue, TcpTableOwnerPidAll, 0);
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            var buffer = Marshal.AllocHGlobal(size);
+            try
+            {
+                var result = GetExtendedTcpTable(buffer, ref size, false, familyValue, TcpTableOwnerPidAll, 0);
+                if (result == 122)
+                {
+                    continue;
+                }
+
+                if (result != 0)
+                {
+                    throw new System.ComponentModel.Win32Exception((int)result, "No se pudo consultar la tabla de conexiones TCP.");
+                }
+
+                return ParseTcpTable(buffer, family, rowSize);
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+        }
+
+        throw new IOException("La tabla de conexiones TCP cambió durante la consulta.");
+    }
+
+    private static List<TcpConnection> ParseTcpTable(IntPtr buffer, AddressFamily family, int rowSize)
+    {
+        var connections = new List<TcpConnection>();
+        var count = Marshal.ReadInt32(buffer);
+        for (var index = 0; index < count; index++)
+        {
+            var row = buffer + 4 + index * rowSize;
+            IPAddress address;
+            uint state;
+            int portRaw;
+            int pid;
+            if (family == AddressFamily.InterNetwork)
+            {
+                state = (uint)Marshal.ReadInt32(row, 0);
+                address = new IPAddress((uint)Marshal.ReadInt32(row, 12));
+                portRaw = Marshal.ReadInt32(row, 16);
+                pid = Marshal.ReadInt32(row, 20);
+            }
+            else
+            {
+                var addressBytes = new byte[16];
+                Marshal.Copy(row + 24, addressBytes, 0, 16);
+                address = new IPAddress(addressBytes, Marshal.ReadInt32(row, 40));
+                portRaw = Marshal.ReadInt32(row, 44);
+                state = (uint)Marshal.ReadInt32(row, 48);
+                pid = Marshal.ReadInt32(row, 52);
+            }
+
+            if (state != TcpStateEstablished)
+            {
+                continue;
+            }
+
+            var port = ((portRaw & 0xFF) << 8) | ((portRaw >> 8) & 0xFF);
+            connections.Add(new TcpConnection(pid, address, port));
+        }
+
+        return connections;
     }
 
     internal static IReadOnlyList<GameObservedEndpoint> ParseGameEndpoints(
@@ -633,12 +706,11 @@ internal sealed class DiagnosticSession
         IReadOnlyDictionary<int, string> processNames,
         IReadOnlyList<GameMonitoringProfile> profiles)
     {
-        var results = new List<GameObservedEndpoint>();
-        foreach (var line in output.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries))
+        var connections = new List<TcpConnection>();
+        foreach (var line in output.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries))
         {
             var match = Regex.Match(line, @"^\s*TCP\s+\S+\s+(?<remote>\S+)\s+ESTABLISHED\s+(?<pid>\d+)", RegexOptions.IgnoreCase);
-            if (!match.Success || !int.TryParse(match.Groups["pid"].Value, out var pid) ||
-                !processNames.TryGetValue(pid, out var processName))
+            if (!match.Success || !int.TryParse(match.Groups["pid"].Value, out var pid))
             {
                 continue;
             }
@@ -647,10 +719,32 @@ internal sealed class DiagnosticSession
             var separator = endpointText.LastIndexOf(':');
             var addressText = separator <= 0 ? string.Empty : endpointText[..separator].Trim('[', ']');
             if (separator <= 0 || !int.TryParse(endpointText[(separator + 1)..], out var port) ||
-                !IPAddress.TryParse(addressText, out var address) || IsPrivateAddress(address))
+                !IPAddress.TryParse(addressText, out var address))
             {
                 continue;
             }
+
+            connections.Add(new TcpConnection(pid, address, port));
+        }
+
+        return MatchGameEndpoints(connections, processNames, profiles);
+    }
+
+    private static IReadOnlyList<GameObservedEndpoint> MatchGameEndpoints(
+        IEnumerable<TcpConnection> connections,
+        IReadOnlyDictionary<int, string> processNames,
+        IReadOnlyList<GameMonitoringProfile> profiles)
+    {
+        var results = new List<GameObservedEndpoint>();
+        foreach (var connection in connections)
+        {
+            if (!processNames.TryGetValue(connection.Pid, out var processName) || IsPrivateAddress(connection.Address))
+            {
+                continue;
+            }
+
+            var address = connection.Address;
+            var port = connection.Port;
 
             foreach (var profile in profiles.Where(profile =>
                          profile.ProcessNames.Any(candidate =>
@@ -696,7 +790,7 @@ internal sealed class DiagnosticSession
                (bytes[0] & 0xFE) == 0xFC;
     }
 
-    private static (string Router, ConnectionInfo Connection) DetectConnection(string? selectedInterfaceId)
+    private static (string Router, ConnectionInfo Connection) DetectConnection(string? selectedInterfaceId, string destinationHost)
     {
         NetworkInterface? network;
         if (!string.IsNullOrWhiteSpace(selectedInterfaceId))
@@ -710,7 +804,7 @@ internal sealed class DiagnosticSession
         }
         else
         {
-            var destination = BitConverter.ToUInt32(IPAddress.Parse("1.1.1.1").GetAddressBytes());
+            var destination = BitConverter.ToUInt32(ResolveIPv4(destinationHost).GetAddressBytes());
             var result = GetBestInterface(destination, out var bestInterfaceIndex);
             if (result != 0)
             {
@@ -759,28 +853,70 @@ internal sealed class DiagnosticSession
         return (ssid, signal);
     }
 
+    private static IPAddress ResolveIPv4(string host)
+    {
+        if (IPAddress.TryParse(host, out var parsed) && parsed.AddressFamily == AddressFamily.InterNetwork)
+        {
+            return parsed;
+        }
+
+        try
+        {
+            var resolved = Dns.GetHostAddresses(host).FirstOrDefault(item => item.AddressFamily == AddressFamily.InterNetwork);
+            if (resolved is not null)
+            {
+                return resolved;
+            }
+        }
+        catch (SocketException)
+        {
+        }
+
+        return IPAddress.Parse("1.1.1.1");
+    }
+
     private static string RunNetsh()
     {
-        using var process = Process.Start(new ProcessStartInfo
+        try
         {
-            FileName = "netsh.exe",
-            Arguments = "wlan show interfaces",
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            CreateNoWindow = true
-        });
-        if (process is null)
+            using var process = Process.Start(new ProcessStartInfo
+            {
+                FileName = "netsh.exe",
+                Arguments = "wlan show interfaces",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                CreateNoWindow = true
+            });
+            if (process is null)
+            {
+                return string.Empty;
+            }
+
+            var outputTask = process.StandardOutput.ReadToEndAsync();
+            if (!process.WaitForExit(2000))
+            {
+                TryKill(process);
+                return string.Empty;
+            }
+
+            return outputTask.GetAwaiter().GetResult();
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception or IOException)
         {
+            Trace.TraceWarning($"No se pudo consultar los detalles Wi-Fi: {exception.Message}");
             return string.Empty;
         }
+    }
 
-        var outputTask = process.StandardOutput.ReadToEndAsync();
-        if (!process.WaitForExit(2000))
+    private static void TryKill(Process process)
+    {
+        try
         {
-            process.Kill();
+            process.Kill(true);
         }
-
-        return outputTask.GetAwaiter().GetResult();
+        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException)
+        {
+        }
     }
 
     private static async Task<string?> FindIspFirstHopAsync(string router, string destination, CancellationToken cancellationToken)

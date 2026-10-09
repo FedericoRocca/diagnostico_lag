@@ -110,7 +110,16 @@ internal sealed record DiagnosticSettings(
     {
         Validate(this);
         Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
-        File.WriteAllText(SettingsPath, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
+        var temporaryPath = SettingsPath + ".tmp";
+        File.WriteAllText(temporaryPath, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
+        if (File.Exists(SettingsPath))
+        {
+            File.Replace(temporaryPath, SettingsPath, null);
+        }
+        else
+        {
+            File.Move(temporaryPath, SettingsPath);
+        }
     }
 
     public static IReadOnlyList<NetworkInterface> AvailableInterfaces()
