@@ -28,7 +28,9 @@ public sealed class WindowConstructionTests
 
             Assert.Equal("Network diagnostics for gaming", form.Text);
             var controls = Descendants(form).ToArray();
-            Assert.Contains(controls, control => control is DataGridView grid && grid.Columns.Count >= 10);
+            var grid = Assert.Single(controls.OfType<DataGridView>());
+            Assert.True(grid.Columns.Count >= 11);
+            Assert.IsType<DataGridViewCheckBoxColumn>(grid.Columns["visible"]);
             Assert.Contains(controls, control => control is LatencyChart);
         });
     }

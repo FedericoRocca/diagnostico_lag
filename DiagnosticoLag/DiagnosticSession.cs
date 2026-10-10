@@ -48,6 +48,7 @@ internal sealed class DiagnosticSession
     private readonly List<ProbeTarget> _targets;
     private readonly Dictionary<string, LatencyStatistics> _statistics = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Queue<int>> _recentMeasurements = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, StatSummary> _recentSummaryCache = new(StringComparer.Ordinal);
     private readonly Queue<string> _recentEvents = new();
     private readonly Dictionary<string, List<DateTime>> _eventTimes = new(StringComparer.Ordinal);
     private readonly Stopwatch _elapsed = Stopwatch.StartNew();
@@ -58,6 +59,8 @@ internal sealed class DiagnosticSession
     private readonly Dictionary<string, ProbeTarget> _gameTargets = new(StringComparer.Ordinal);
     private IReadOnlyList<GameObservedEndpoint> _activeGameEndpoints = Array.Empty<GameObservedEndpoint>();
     private DateTime _lastGameScanAt = DateTime.MinValue;
+    private DiagnosticResult? _diagnosisCache;
+    private int _diagnosisCacheSampleCount = -1;
 
     [DllImport("iphlpapi.dll", ExactSpelling = true)]
     private static extern uint GetBestInterface(uint destinationAddress, out uint interfaceIndex);
@@ -121,6 +124,7 @@ internal sealed class DiagnosticSession
             var target = targetsToMeasure[index];
             var value = measurements[index];
             _statistics[target.Key].Add(value);
+            _recentSummaryCache.Clear();
             var recent = _recentMeasurements[target.Key];
             recent.Enqueue(value);
             if (recent.Count > 60)
@@ -239,11 +243,11 @@ internal sealed class DiagnosticSession
             .Select(target => new TargetSnapshot(target, Summary(target.Key)))
             .ToArray();
         var lookup = targets.ToDictionary(item => item.Target.Key, item => item.Statistics, StringComparer.Ordinal);
-        var recentLookup = _recentMeasurements.ToDictionary(
-            item => item.Key,
-            item => LatencyStatistics.FromSamples(item.Value),
-            StringComparer.Ordinal);
-        var diagnosis = Diagnose(lookup, recentLookup);
+        var recentLookup = GetRecentSummaries();
+        var diagnosis = _diagnosisCacheSampleCount == _samples && _diagnosisCache is not null
+            ? _diagnosisCache
+            : _diagnosisCache = Diagnose(lookup, recentLookup);
+        _diagnosisCacheSampleCount = _samples;
         var gameEndpoints = _gameTargets.Values
             .Select(target => new GameObservedEndpoint(
                 target.GameProfileId!,
@@ -255,6 +259,21 @@ internal sealed class DiagnosticSession
             .ToArray();
         return new MonitorSnapshot(_startedAt, duration, targets, lastMeasurements, _recentEvents.ToArray(), Connection,
             RouterAddress, IspAddress, gameEndpoints, _activeGameEndpoints, diagnosis, Math.Max(0, 60 - _samples));
+    }
+
+    private IReadOnlyDictionary<string, StatSummary> GetRecentSummaries()
+    {
+        if (_recentSummaryCache.Count == _recentMeasurements.Count)
+        {
+            return _recentSummaryCache;
+        }
+
+        foreach (var item in _recentMeasurements)
+        {
+            _recentSummaryCache[item.Key] = LatencyStatistics.FromSamples(item.Value);
+        }
+
+        return _recentSummaryCache;
     }
 
     private StatSummary Summary(string key)

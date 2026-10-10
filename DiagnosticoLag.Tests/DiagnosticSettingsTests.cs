@@ -80,7 +80,8 @@ public sealed class DiagnosticSettingsTests
 
         var result = DiagnosticSettings.Parse(json, "en");
 
-        Assert.Equal(expected with { GameProfiles = [] }, result.Settings with { GameProfiles = [] });
+        Assert.Equal(expected with { GameProfiles = [], ChartVisibility = result.Settings.ChartVisibility },
+            result.Settings with { GameProfiles = [] });
         var expectedProfile = Assert.Single(expected.GameProfiles);
         var actualProfile = Assert.Single(result.Settings.GameProfiles);
         Assert.Equal(expectedProfile.Id, actualProfile.Id);
@@ -88,6 +89,44 @@ public sealed class DiagnosticSettingsTests
         Assert.Equal(expectedProfile.Enabled, actualProfile.Enabled);
         Assert.Equal(expectedProfile.ProcessNames, actualProfile.ProcessNames);
         Assert.False(result.NeedsSave);
+    }
+
+    [Fact]
+    public void PersistsChartVisibilityPreferences()
+    {
+        var expected = DiagnosticSettings.Default with
+        {
+            ChartVisibility = new Dictionary<string, bool>
+            {
+                ["router"] = true,
+                ["game:league-of-legends:203.0.113.42:443"] = false
+            }
+        };
+
+        var result = DiagnosticSettings.Parse(JsonSerializer.Serialize(expected), "en");
+
+        Assert.Equal(expected.ChartVisibility, result.Settings.ChartVisibility);
+        Assert.False(result.NeedsSave);
+    }
+
+    [Fact]
+    public void MigratesSettingsWithoutChartVisibility()
+    {
+        const string json = """
+            {
+              "CloudflareAddress": "1.1.1.1",
+              "GoogleAddress": "8.8.8.8",
+              "SampleIntervalSeconds": 1,
+              "NetworkInterfaceId": null,
+              "Language": "en",
+              "GameProfiles": []
+            }
+            """;
+
+        var result = DiagnosticSettings.Parse(json, "en");
+
+        Assert.Empty(result.Settings.ChartVisibility);
+        Assert.True(result.NeedsSave);
     }
 
     [Theory]

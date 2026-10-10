@@ -31,6 +31,7 @@ internal sealed record DiagnosticSettings(
     public string LogDirectory { get; init; } = DefaultOutputDirectory;
     public string CsvDirectory { get; init; } = DefaultOutputDirectory;
     public string Language { get; init; } = "en";
+    public IReadOnlyDictionary<string, bool> ChartVisibility { get; init; } = new Dictionary<string, bool>(StringComparer.Ordinal);
 
     public static string DefaultOutputDirectory => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -80,6 +81,7 @@ internal sealed record DiagnosticSettings(
         var hasSavedLanguage = root.TryGetProperty(nameof(Language), out _);
         var hasValidLanguage = settings.Language is "es" or "en";
         var hasGameProfiles = root.TryGetProperty(nameof(GameProfiles), out _);
+        var hasChartVisibility = root.TryGetProperty(nameof(ChartVisibility), out _);
         if (!hasGameProfiles)
         {
             var detectLeague = root.TryGetProperty(nameof(DetectLeague), out var detectValue) &&
@@ -103,7 +105,7 @@ internal sealed record DiagnosticSettings(
         }
 
         Validate(settings);
-        return new DiagnosticSettingsReadResult(settings, !hasSavedLanguage || !hasValidLanguage);
+        return new DiagnosticSettingsReadResult(settings, !hasSavedLanguage || !hasValidLanguage || !hasChartVisibility);
     }
 
     public void Save() => SaveTo(SettingsPath);
@@ -150,6 +152,11 @@ internal sealed record DiagnosticSettings(
         if (settings.GameProfiles is null)
         {
             throw new InvalidDataException(Localization.T("La lista de perfiles de juegos no es válida."));
+        }
+
+        if (settings.ChartVisibility is null || settings.ChartVisibility.Any(item => string.IsNullOrWhiteSpace(item.Key)))
+        {
+            throw new InvalidDataException(Localization.T("La configuración de visibilidad del gráfico no es válida."));
         }
 
         if (settings.GameProfiles.Count > 8)

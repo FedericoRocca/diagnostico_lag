@@ -5,6 +5,7 @@ using System.Reflection;
 using System.Text;
 using System.Collections;
 using System.ComponentModel;
+using System.Windows.Forms.VisualStyles;
 
 namespace DiagnosticoLag;
 
@@ -27,6 +28,7 @@ internal sealed class MainForm : Form
     private readonly Button _helpButton = new();
     private readonly Button _openLogButton = new();
     private readonly Button _deleteSessionsButton = new();
+    private readonly SessionLogWriter _sessionLogWriter = new();
     private readonly Label _titleLabel = new();
     private readonly Label _subtitleLabel = new();
     private readonly Icon _applicationIcon;
@@ -44,6 +46,7 @@ internal sealed class MainForm : Form
     private bool _loggingAvailable = true;
     private bool _csvAvailable = true;
     private bool _closing;
+    private bool _updatingChartVisibility;
 
     public MainForm() : this(null)
     {
@@ -80,6 +83,7 @@ internal sealed class MainForm : Form
         Text = Localization.T("Diagnóstico de red para gaming");
         BuildInterface();
         ApplyLocalization();
+        _chart.SetSeriesVisibility(_settings.ChartVisibility);
         _timer.Tick += async (_, _) => await SampleOnceAsync();
         FormClosing += OnFormClosing;
         SetMonitoringControls(false, false);
@@ -173,6 +177,7 @@ internal sealed class MainForm : Form
         _chart.BackColor = Color.White;
         _chart.Margin = new Padding(0, 12, 0, 8);
         layout.Controls.Add(_chart, 0, 2);
+        _chart.SeriesVisibilityChanged += OnChartSeriesVisibilityChanged;
 
         var toolbar = new FlowLayoutPanel
         {
@@ -274,6 +279,18 @@ internal sealed class MainForm : Form
         _grid.DefaultCellStyle.SelectionForeColor = Color.FromArgb(24, 39, 61);
         _grid.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(249, 251, 253);
         _grid.ShowCellToolTips = true;
+        var visible = new DataGridViewCheckBoxColumn
+        {
+            Name = "visible",
+            HeaderText = string.Empty,
+            AutoSizeMode = DataGridViewAutoSizeColumnMode.None,
+            Width = 38,
+            MinimumWidth = 38,
+            Resizable = DataGridViewTriState.False,
+            ReadOnly = false,
+            ToolTipText = Localization.T("Mostrar u ocultar este destino en el gráfico sin detener sus mediciones.")
+        };
+        _grid.Columns.Add(visible);
         _grid.Columns.Add("target", "Destino");
         _grid.Columns.Add("samples", "Muestras");
         _grid.Columns.Add("average", "Prom. ms");
@@ -292,6 +309,7 @@ internal sealed class MainForm : Form
         RefreshGridHeaders();
         _grid.CellPainting += PaintColumnHeaderHelp;
         _grid.ColumnHeaderMouseClick += OnColumnHeaderMouseClick;
+        _grid.CellContentClick += OnGridCellContentClick;
     }
 
     private void ApplyLocalization()
@@ -367,6 +385,18 @@ internal sealed class MainForm : Form
             return;
         }
 
+        if (_grid.Columns[e.ColumnIndex].Name == "visible")
+        {
+            var state = _grid.Rows.Count > 0 && _grid.Rows.Cast<DataGridViewRow>()
+                .All(row => Convert.ToBoolean(row.Cells["visible"].Value, CultureInfo.InvariantCulture));
+            CheckBoxRenderer.DrawCheckBox(graphics, new Point(
+                e.CellBounds.Left + (e.CellBounds.Width - 15) / 2,
+                e.CellBounds.Top + (e.CellBounds.Height - 15) / 2),
+                state ? CheckBoxState.CheckedNormal : CheckBoxState.UncheckedNormal);
+            e.Handled = true;
+            return;
+        }
+
         var size = 16;
         var bounds = new Rectangle(e.CellBounds.Right - size - 5, e.CellBounds.Top + (e.CellBounds.Height - size) / 2, size, size);
         using var background = new SolidBrush(Color.White);
@@ -385,6 +415,13 @@ internal sealed class MainForm : Form
     {
         if (e.ColumnIndex < 0)
         {
+            return;
+        }
+
+        if (_grid.Columns[e.ColumnIndex].Name == "visible")
+        {
+            SetAllChartVisibility(!_grid.Rows.Cast<DataGridViewRow>()
+                .All(row => Convert.ToBoolean(row.Cells["visible"].Value, CultureInfo.InvariantCulture)));
             return;
         }
 
@@ -409,6 +446,18 @@ internal sealed class MainForm : Form
         }
 
         ApplyGridSort();
+    }
+
+    private void OnGridCellContentClick(object? sender, DataGridViewCellEventArgs e)
+    {
+        if (e.RowIndex < 0 || e.ColumnIndex < 0 || _grid.Columns[e.ColumnIndex].Name != "visible" ||
+            _grid.Rows[e.RowIndex].Tag is not string key)
+        {
+            return;
+        }
+
+        var visible = !Convert.ToBoolean(_grid.Rows[e.RowIndex].Cells["visible"].Value, CultureInfo.InvariantCulture);
+        _chart.SetSeriesVisibility(key, visible);
     }
 
     private void ApplyGridSort()
@@ -644,6 +693,7 @@ internal sealed class MainForm : Form
                 }
 
                 row.Cells["target"].Value = Localization.T(target.Target.Name);
+                row.Cells["visible"].Value = _chart.IsSeriesVisible(target.Target.Key);
                 row.Cells["samples"].Value = stats.Samples;
                 row.Cells["average"].Value = stats.Average.ToString("F1");
                 row.Cells["median"].Value = stats.Median;
@@ -711,6 +761,49 @@ internal sealed class MainForm : Form
                 snapshot.SamplesUntilBaseline == 0 ? Localization.T("lista") : Localization.F("en {0} muestras", snapshot.SamplesUntilBaseline)) +
             $"{Environment.NewLine}{gameStatus}{Environment.NewLine}{Environment.NewLine}{Localization.T("Eventos recientes")}{Environment.NewLine}" +
             (snapshot.RecentEvents.Count == 0 ? Localization.T("Sin pérdidas ni picos ≥120 ms.") : string.Join(Environment.NewLine, snapshot.RecentEvents.TakeLast(10).Select(Localization.T))));
+    }
+
+    private void SetAllChartVisibility(bool visible)
+    {
+        foreach (var row in _grid.Rows.Cast<DataGridViewRow>())
+        {
+            if (row.Tag is string key)
+            {
+                _chart.SetSeriesVisibility(key, visible);
+            }
+        }
+    }
+
+    private void OnChartSeriesVisibilityChanged(string key, bool visible)
+    {
+        if (_updatingChartVisibility)
+        {
+            return;
+        }
+
+        _updatingChartVisibility = true;
+        try
+        {
+            var row = _grid.Rows.Cast<DataGridViewRow>()
+                .FirstOrDefault(candidate => string.Equals(candidate.Tag as string, key, StringComparison.Ordinal));
+            if (row is not null)
+            {
+                row.Cells["visible"].Value = visible;
+            }
+
+            _settings = _settings with { ChartVisibility = _chart.GetSeriesVisibility() };
+            _settings.Save();
+            _grid.InvalidateColumn(_grid.Columns["visible"]!.Index);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            MessageBox.Show(this, Localization.T(exception.Message), Localization.T("No se pudo guardar la configuración"),
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            _updatingChartVisibility = false;
+        }
     }
 
     private static string FormatDuration(TimeSpan duration)
@@ -827,7 +920,7 @@ internal sealed class MainForm : Form
                 return;
             }
 
-            File.AppendAllText(_sessionLogPath, text + Environment.NewLine, new UTF8Encoding(false));
+            _sessionLogWriter.AppendText(_sessionLogPath, text);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -847,7 +940,7 @@ internal sealed class MainForm : Form
 
         try
         {
-            File.AppendAllText(_sessionCsvPath, text + Environment.NewLine, new UTF8Encoding(true));
+            _sessionLogWriter.AppendCsv(_sessionCsvPath, text);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -1507,6 +1600,7 @@ internal sealed class LatencyChart : Control
     private DateTime? _sessionStartedAt;
     private string? _lastHoverText;
     private TimeSpan? _viewDuration;
+    public event Action<string, bool>? SeriesVisibilityChanged;
 
     public LatencyChart()
     {
@@ -1573,11 +1667,6 @@ internal sealed class LatencyChart : Control
             }
         }
 
-        _hiddenSeriesKeys.Clear();
-        foreach (var item in _seriesMenuItems.Values)
-        {
-            item.Checked = true;
-        }
         _events.Clear();
         _sessionStartedAt = startedAt;
         _gameSeriesKeys.Clear();
@@ -1633,6 +1722,53 @@ internal sealed class LatencyChart : Control
         }
 
         Invalidate();
+    }
+
+    public bool IsSeriesVisible(string key) => !_hiddenSeriesKeys.Contains(key);
+
+    public IReadOnlyDictionary<string, bool> GetSeriesVisibility() =>
+        _labels.Keys.ToDictionary(key => key, IsSeriesVisible, StringComparer.Ordinal);
+
+    public void SetSeriesVisibility(IReadOnlyDictionary<string, bool> visibility)
+    {
+        _hiddenSeriesKeys.Clear();
+        foreach (var (key, visible) in visibility.Where(item => !item.Value))
+        {
+            _hiddenSeriesKeys.Add(key);
+        }
+
+        foreach (var (key, menuItem) in _seriesMenuItems)
+        {
+            menuItem.Checked = IsSeriesVisible(key);
+        }
+
+        Invalidate();
+    }
+
+    public void SetSeriesVisibility(string key, bool visible)
+    {
+        var changed = IsSeriesVisible(key) != visible;
+        if (visible)
+        {
+            _hiddenSeriesKeys.Remove(key);
+        }
+        else
+        {
+            _hiddenSeriesKeys.Add(key);
+        }
+
+        if (_seriesMenuItems.TryGetValue(key, out var menuItem))
+        {
+            menuItem.Checked = visible;
+        }
+
+        if (changed)
+        {
+            _lastHoverText = null;
+            _hoverTip.Hide(this);
+            Invalidate();
+            SeriesVisibilityChanged?.Invoke(key, visible);
+        }
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -1919,18 +2055,7 @@ internal sealed class LatencyChart : Control
         };
         item.Click += (_, _) =>
         {
-            if (item.Checked)
-            {
-                _hiddenSeriesKeys.Remove(key);
-            }
-            else
-            {
-                _hiddenSeriesKeys.Add(key);
-            }
-
-            _lastHoverText = null;
-            _hoverTip.Hide(this);
-            Invalidate();
+            SetSeriesVisibility(key, item.Checked);
         };
         _seriesMenuItems.Add(key, item);
         _viewMenu.Items.Add(item);
