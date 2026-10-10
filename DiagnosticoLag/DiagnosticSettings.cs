@@ -20,7 +20,7 @@ internal sealed record DiagnosticSettingsReadResult(DiagnosticSettings Settings,
 internal sealed record DiagnosticSettings(
     string CloudflareAddress,
     string GoogleAddress,
-    int SampleIntervalSeconds,
+    int SampleIntervalMilliseconds,
     string? NetworkInterfaceId)
 {
     public IReadOnlyList<GameMonitoringProfile> GameProfiles { get; init; } = [GameMonitoringProfile.LeagueOfLegends];
@@ -37,7 +37,7 @@ internal sealed record DiagnosticSettings(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "DiagnosticoLag", "sesiones");
 
-    public static DiagnosticSettings Default { get; } = new("1.1.1.1", "8.8.8.8", 1, null)
+    public static DiagnosticSettings Default { get; } = new("1.1.1.1", "8.8.8.8", 1000, null)
     {
         Language = "en"
     };
@@ -80,6 +80,11 @@ internal sealed record DiagnosticSettings(
         var root = document.RootElement;
         var hasSavedLanguage = root.TryGetProperty(nameof(Language), out _);
         var hasValidLanguage = settings.Language is "es" or "en";
+        var hasSampleIntervalMilliseconds = root.TryGetProperty(nameof(SampleIntervalMilliseconds), out _);
+        var legacySeconds = 0;
+        var hasLegacySampleIntervalSeconds = root.TryGetProperty("SampleIntervalSeconds", out var legacyInterval) &&
+                                              legacyInterval.ValueKind == JsonValueKind.Number &&
+                                              legacyInterval.TryGetInt32(out legacySeconds);
         var hasGameProfiles = root.TryGetProperty(nameof(GameProfiles), out _);
         var hasChartVisibility = root.TryGetProperty(nameof(ChartVisibility), out _);
         if (!hasGameProfiles)
@@ -104,8 +109,14 @@ internal sealed record DiagnosticSettings(
             settings = settings with { Language = hasSavedLanguage ? "en" : initialLanguage };
         }
 
+        if (!hasSampleIntervalMilliseconds && hasLegacySampleIntervalSeconds)
+        {
+            settings = settings with { SampleIntervalMilliseconds = legacySeconds * 1000 };
+        }
+
         Validate(settings);
-        return new DiagnosticSettingsReadResult(settings, !hasSavedLanguage || !hasValidLanguage || !hasChartVisibility);
+        return new DiagnosticSettingsReadResult(settings,
+            !hasSavedLanguage || !hasValidLanguage || !hasChartVisibility || !hasSampleIntervalMilliseconds);
     }
 
     public void Save() => SaveTo(SettingsPath);
@@ -139,9 +150,9 @@ internal sealed record DiagnosticSettings(
 
     internal static void Validate(DiagnosticSettings settings)
     {
-        if (settings.SampleIntervalSeconds is < 1 or > 10)
+        if (settings.SampleIntervalMilliseconds is < 50 or > 10000)
         {
-            throw new InvalidDataException(Localization.T("El intervalo de medición debe estar entre 1 y 10 segundos."));
+            throw new InvalidDataException(Localization.T("El intervalo de medición debe estar entre 50 y 10000 milisegundos."));
         }
 
         if (!IsValidHost(settings.CloudflareAddress) || !IsValidHost(settings.GoogleAddress))

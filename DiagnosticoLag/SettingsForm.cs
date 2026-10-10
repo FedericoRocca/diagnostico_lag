@@ -59,9 +59,11 @@ internal sealed class SettingsForm : Form
         _cloudflareAddress.Dock = DockStyle.Fill;
         _googleAddress.Text = settings.GoogleAddress;
         _googleAddress.Dock = DockStyle.Fill;
-        _sampleInterval.Minimum = 1;
-        _sampleInterval.Maximum = 10;
-        _sampleInterval.Value = settings.SampleIntervalSeconds;
+        _sampleInterval.Minimum = 50;
+        _sampleInterval.Maximum = 10000;
+        _sampleInterval.Increment = 50;
+        _sampleInterval.ReadOnly = false;
+        _sampleInterval.Value = settings.SampleIntervalMilliseconds;
         _sampleInterval.Width = 100;
 
         layout.Controls.Add(CreateLabel("Idioma:"), 0, 0);
@@ -79,7 +81,7 @@ internal sealed class SettingsForm : Form
         layout.Controls.Add(CreateLabel("Destino 2 (ICMP/TCP):"), 0, 2);
         layout.Controls.Add(_googleAddress, 1, 2);
         layout.SetColumnSpan(_googleAddress, 2);
-        layout.Controls.Add(CreateLabel("Intervalo entre muestras:"), 0, 3);
+        layout.Controls.Add(CreateLabel("Intervalo entre muestras (ms):"), 0, 3);
         layout.Controls.Add(_sampleInterval, 1, 3);
         layout.Controls.Add(CreateLabel("Interfaz de red:"), 0, 4);
         _networkInterface.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -223,6 +225,13 @@ internal sealed class SettingsForm : Form
         };
         try
         {
+            if (updated.SampleIntervalMilliseconds <= 500)
+            {
+                MessageBox.Show(this,
+                    Localization.T("Un intervalo de 500 ms o menos aumenta el tamaño de los logs y el uso de recursos."),
+                    Localization.T("Advertencia de intervalo"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+
             updated.Save();
             Settings = updated;
         }

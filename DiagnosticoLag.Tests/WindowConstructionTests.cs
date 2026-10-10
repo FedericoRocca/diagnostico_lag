@@ -8,15 +8,9 @@ namespace DiagnosticoLag.Tests;
 public sealed class WindowConstructionTests
 {
     [Fact]
-    public void SupportButtonPointsToCafecitoAndIsLocalized()
+    public void SupportLinkPointsToCafecito()
     {
-        RunOnStaThread(() =>
-        {
-            using var button = SupportLink.CreateButton();
-
-            Assert.Equal("https://cafecito.app/magusman", SupportLink.Url);
-            Assert.False(string.IsNullOrWhiteSpace(button.Text));
-        });
+        Assert.Equal("https://cafecito.app/magusman", SupportLink.Url);
     }
 
     [Fact]
@@ -32,6 +26,45 @@ public sealed class WindowConstructionTests
             Assert.True(grid.Columns.Count >= 11);
             Assert.IsType<DataGridViewCheckBoxColumn>(grid.Columns["visible"]);
             Assert.Contains(controls, control => control is LatencyChart);
+            var durations = Assert.Single(controls.OfType<ComboBox>(), combo => combo.Items.Count == 5);
+            Assert.Equal(["No limit", "30 seconds", "1 minute", "5 minutes", "15 minutes"],
+                durations.Items.Cast<object>().Select(item => item.ToString() ?? string.Empty).ToArray());
+            var menu = Assert.Single(controls.OfType<MenuStrip>());
+            Assert.Equal(
+                ["File", "Settings", "Export", "Sessions", "Help"],
+                menu.Items.Cast<ToolStripItem>().Select(item => item.Text ?? string.Empty).ToArray());
+            var export = Assert.Single(menu.Items.Cast<ToolStripMenuItem>(), item => item.Text == "Export");
+            Assert.Equal(["Export report", "Export CSV"], export.DropDownItems.Cast<ToolStripItem>().Select(item => item.Text ?? string.Empty).ToArray());
+            var sessions = Assert.Single(menu.Items.Cast<ToolStripMenuItem>(), item => item.Text == "Sessions");
+            Assert.Equal(["Session folder", "Delete sessions"], sessions.DropDownItems.Cast<ToolStripItem>().Select(item => item.Text ?? string.Empty).ToArray());
+            var help = Assert.Single(menu.Items.Cast<ToolStripMenuItem>(), item => item.Text == "Help");
+            Assert.Equal(["Cafecito", "About"], help.DropDownItems.Cast<ToolStripItem>().Select(item => item.Text ?? string.Empty).ToArray());
+        });
+    }
+
+    [Fact]
+    public void DurationChoicesRefreshWhenLanguageChanges()
+    {
+        RunOnStaThread(() =>
+        {
+            try
+            {
+                Localization.SetLanguage("es");
+                using var form = new MainForm(DiagnosticSettings.Default with { Language = "es" });
+                var durations = Assert.Single(Descendants(form).OfType<ComboBox>(), combo => combo.Items.Count == 5);
+                durations.SelectedIndex = 3;
+
+                Localization.SetLanguage("en");
+                form.ApplyLocalization();
+
+                Assert.Equal("5 minutes", durations.SelectedItem?.ToString());
+                Assert.Equal(["No limit", "30 seconds", "1 minute", "5 minutes", "15 minutes"],
+                    durations.Items.Cast<object>().Select(item => item.ToString() ?? string.Empty).ToArray());
+            }
+            finally
+            {
+                Localization.SetLanguage("es");
+            }
         });
     }
 
@@ -51,6 +84,24 @@ public sealed class WindowConstructionTests
             Assert.False(router.Checked);
             router.PerformClick();
             Assert.True(router.Checked);
+            Assert.True(chart.SupportsSeries("router"));
+            Assert.False(chart.SupportsSeries("isp"));
+            Assert.False(chart.SupportsSeries("target-1-tcp"));
+
+            var timestamp = DateTime.Now;
+            chart.AddSample(timestamp, new Dictionary<string, int>
+            {
+                ["router"] = 150,
+                ["cloudflare-icmp"] = 150
+            }, new[]
+            {
+                new TargetSnapshot(new ProbeTarget("router", "Router", "192.168.0.1", ProbeType.Icmp),
+                    new StatSummary(1, 1, 0, 150, 150, 150, 150, 150, 1, 0, 0, 0)),
+                new TargetSnapshot(new ProbeTarget("cloudflare-icmp", "Cloudflare", "1.1.1.1", ProbeType.Icmp),
+                    new StatSummary(1, 1, 0, 150, 150, 150, 150, 150, 1, 0, 0, 0))
+            });
+            chart.SetSeriesVisibility("cloudflare-icmp", false);
+            Assert.Equal(1, chart.VisibleEventCount);
         });
     }
 
@@ -69,6 +120,22 @@ public sealed class WindowConstructionTests
             Assert.Contains("Español", languagePicker.Items.Cast<object>().Select(item => item.ToString()));
             Assert.Contains("English", languagePicker.Items.Cast<object>().Select(item => item.ToString()));
             Assert.Contains(controls, control => control is CheckedListBox);
+        });
+    }
+
+    [Fact]
+    public void SamplingIntervalAllowsFiftyMillisecondStepsAndManualInput()
+    {
+        RunOnStaThread(() =>
+        {
+            using var form = new SettingsForm(DiagnosticSettings.Default);
+            var interval = Assert.Single(Descendants(form).OfType<NumericUpDown>());
+
+            Assert.Equal(50, interval.Minimum);
+            Assert.Equal(50, interval.Increment);
+            Assert.False(interval.ReadOnly);
+            interval.Value = 125;
+            Assert.Equal(125, interval.Value);
         });
     }
 

@@ -13,15 +13,15 @@ public sealed class DiagnosticSettingsTests
         Assert.Null(exception);
         Assert.Equal("1.1.1.1", DiagnosticSettings.Default.CloudflareAddress);
         Assert.Equal("8.8.8.8", DiagnosticSettings.Default.GoogleAddress);
-        Assert.Equal(1, DiagnosticSettings.Default.SampleIntervalSeconds);
+        Assert.Equal(1000, DiagnosticSettings.Default.SampleIntervalMilliseconds);
     }
 
     [Theory]
-    [InlineData(0)]
-    [InlineData(11)]
+    [InlineData(49)]
+    [InlineData(10001)]
     public void RejectsSampleIntervalsOutsideSupportedRange(int interval)
     {
-        var settings = DiagnosticSettings.Default with { SampleIntervalSeconds = interval };
+        var settings = DiagnosticSettings.Default with { SampleIntervalMilliseconds = interval };
 
         Assert.Throws<InvalidDataException>(() => DiagnosticSettings.Validate(settings));
     }
@@ -73,7 +73,7 @@ public sealed class DiagnosticSettingsTests
         var expected = DiagnosticSettings.Default with
         {
             Language = "es",
-            SampleIntervalSeconds = 3,
+            SampleIntervalMilliseconds = 3000,
             GameProfiles = [new GameMonitoringProfile("game", "Game", ["game.exe"], true)]
         };
         var json = JsonSerializer.Serialize(expected);
@@ -126,6 +126,7 @@ public sealed class DiagnosticSettingsTests
         var result = DiagnosticSettings.Parse(json, "en");
 
         Assert.Empty(result.Settings.ChartVisibility);
+        Assert.Equal(1000, result.Settings.SampleIntervalMilliseconds);
         Assert.True(result.NeedsSave);
     }
 
@@ -151,7 +152,18 @@ public sealed class DiagnosticSettingsTests
         var profile = Assert.Single(result.Settings.GameProfiles);
         Assert.Equal(GameMonitoringProfile.LeagueOfLegends.Id, profile.Id);
         Assert.Equal(enabled, profile.Enabled);
+        Assert.Equal(2000, result.Settings.SampleIntervalMilliseconds);
         Assert.True(result.NeedsSave);
+    }
+
+    [Fact]
+    public void AcceptsShortSamplingIntervalsThatWarnInTheSettingsUi()
+    {
+        var settings = DiagnosticSettings.Default with { SampleIntervalMilliseconds = 500 };
+
+        var exception = Record.Exception(() => DiagnosticSettings.Validate(settings));
+
+        Assert.Null(exception);
     }
 
     [Fact]
@@ -167,13 +179,13 @@ public sealed class DiagnosticSettingsTests
         var path = Path.Combine(directory, "configuracion.json");
         try
         {
-            var first = DiagnosticSettings.Default with { Language = "es", SampleIntervalSeconds = 3 };
+            var first = DiagnosticSettings.Default with { Language = "es", SampleIntervalMilliseconds = 3000 };
             first.SaveTo(path);
-            var second = first with { SampleIntervalSeconds = 5 };
+            var second = first with { SampleIntervalMilliseconds = 5000 };
             second.SaveTo(path);
 
             var loaded = DiagnosticSettings.Parse(File.ReadAllText(path), "en").Settings;
-            Assert.Equal(5, loaded.SampleIntervalSeconds);
+            Assert.Equal(5000, loaded.SampleIntervalMilliseconds);
             Assert.Equal("es", loaded.Language);
             Assert.False(File.Exists(path + ".tmp"));
         }
@@ -194,7 +206,7 @@ public sealed class DiagnosticSettingsTests
             var original = File.ReadAllText(path);
 
             Assert.Throws<InvalidDataException>(() =>
-                (DiagnosticSettings.Default with { SampleIntervalSeconds = 99 }).SaveTo(path));
+                (DiagnosticSettings.Default with { SampleIntervalMilliseconds = 10001 }).SaveTo(path));
 
             Assert.Equal(original, File.ReadAllText(path));
         }

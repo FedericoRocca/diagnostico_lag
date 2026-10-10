@@ -6,6 +6,10 @@ Aplicación de escritorio para Windows que ayuda a diagnosticar latencia, pérdi
 
 Al finalizar una sesión, muestra gráficos comparativos de latencia promedio/P95 y pérdida o fallos de conexión, junto con explicaciones de los hallazgos. El informe final de texto también se conserva en el registro y se puede exportar.
 
+El monitoreo permite seleccionar una duración rápida de 30 segundos, 1, 5 o 15 minutos, o dejarlo sin límite. Al alcanzar una duración seleccionada, la sesión se finaliza y se muestra el informe automáticamente. El dashboard y los informes incluyen un resumen de salud de la conexión basado en el diagnóstico actual.
+
+La barra superior contiene las opciones de Archivo, Configuración, Exportar, Sesiones y Ayuda. Las acciones de exportación y administración de sesiones se encuentran dentro de sus respectivos menús para mantener despejada la barra de monitoreo.
+
 <img width="1920" height="1020" alt="4" src="https://github.com/user-attachments/assets/a0b307ea-11e8-4908-add1-88fa9107759d" />
 <img width="1920" height="1020" alt="3" src="https://github.com/user-attachments/assets/ebddf7c5-da48-4853-bdfd-26c01a4d4207" />
 <img width="1920" height="1020" alt="2" src="https://github.com/user-attachments/assets/4168a30f-e465-4449-9868-232d22d8dc98" />
@@ -16,11 +20,12 @@ Las preferencias se guardan en `%LOCALAPPDATA%\DiagnosticoLag\configuracion.json
 
 - En el primer inicio, el idioma se elige según el idioma de interfaz del sistema operativo: español si está configurado en español e inglés en los demás casos o si no se puede detectar. La elección queda guardada y se puede cambiar desde Configuración; se utiliza también en diagnósticos, informes y CSV.
 - Destinos externos, intervalo de muestreo e interfaz de red.
+- El intervalo de muestreo se configura en milisegundos, entre 50 y 10000 ms. Las flechas avanzan de 50 en 50, aunque también se puede escribir cualquier valor dentro del rango. Valores de 500 ms o menos muestran una advertencia porque aumentan el tamaño de los logs y el uso de recursos. Las configuraciones antiguas expresadas en segundos se migran automáticamente.
 - Perfiles de juegos editables. Cada perfil define el nombre y los nombres de procesos que se detectan; se pueden activar o desactivar. Si un perfil está desactivado, no agrega mediciones a la grilla, al gráfico, a los informes ni a los CSV.
 - En esta primera implementación, si se observa una conexión TCP establecida de un proceso configurado, se sondea su IP remota con ICMP como referencia aproximada de ruta. El endpoint puede ser auxiliar y no el servidor de la partida. No se presenta como ping real del juego; muchos juegos usan UDP y protocolos propios.
 - Carpetas independientes para los registros de sesión y los archivos CSV; también se usan como ubicación inicial al exportar.
 
-Los registros y CSV se crean en las carpetas configuradas. Los informes se pueden exportar desde la aplicación.
+Los registros y CSV se crean en las carpetas configuradas. Los informes se pueden exportar desde la aplicación. Cada sesión incluye metadatos de trazabilidad, como nombre y versión del aplicativo, versión del esquema de datos, identificador único de sesión, fecha de inicio, sistema operativo, arquitectura, cultura, tipo de conexión, intervalo de muestreo y estado de finalización. En los CSV estos datos aparecen como líneas `#` antes de las columnas de mediciones, sin alterar el formato de las filas de datos.
 
 Cada encabezado de la grilla incluye un indicador **(?)**: al pasar el cursor se muestra una breve descripción y al hacer clic se abre la explicación completa de esa métrica.
 
