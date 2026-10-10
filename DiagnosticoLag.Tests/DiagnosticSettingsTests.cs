@@ -120,4 +120,48 @@ public sealed class DiagnosticSettingsTests
     {
         Assert.Throws<JsonException>(() => DiagnosticSettings.Parse("{", "en"));
     }
+
+    [Fact]
+    public void SaveWritesAtomicallyAndRoundTrips()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "lagnostics-tests-" + Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(directory, "configuracion.json");
+        try
+        {
+            var first = DiagnosticSettings.Default with { Language = "es", SampleIntervalSeconds = 3 };
+            first.SaveTo(path);
+            var second = first with { SampleIntervalSeconds = 5 };
+            second.SaveTo(path);
+
+            var loaded = DiagnosticSettings.Parse(File.ReadAllText(path), "en").Settings;
+            Assert.Equal(5, loaded.SampleIntervalSeconds);
+            Assert.Equal("es", loaded.Language);
+            Assert.False(File.Exists(path + ".tmp"));
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void SaveRejectsInvalidSettingsWithoutTouchingExistingFile()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "lagnostics-tests-" + Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(directory, "configuracion.json");
+        try
+        {
+            DiagnosticSettings.Default.SaveTo(path);
+            var original = File.ReadAllText(path);
+
+            Assert.Throws<InvalidDataException>(() =>
+                (DiagnosticSettings.Default with { SampleIntervalSeconds = 99 }).SaveTo(path));
+
+            Assert.Equal(original, File.ReadAllText(path));
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, true);
+        }
+    }
 }

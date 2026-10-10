@@ -106,19 +106,21 @@ internal sealed record DiagnosticSettings(
         return new DiagnosticSettingsReadResult(settings, !hasSavedLanguage || !hasValidLanguage);
     }
 
-    public void Save()
+    public void Save() => SaveTo(SettingsPath);
+
+    internal void SaveTo(string path)
     {
         Validate(this);
-        Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
-        var temporaryPath = SettingsPath + ".tmp";
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var temporaryPath = path + ".tmp";
         File.WriteAllText(temporaryPath, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
-        if (File.Exists(SettingsPath))
+        if (File.Exists(path))
         {
-            File.Replace(temporaryPath, SettingsPath, null);
+            File.Replace(temporaryPath, path, null);
         }
         else
         {
-            File.Move(temporaryPath, SettingsPath);
+            File.Move(temporaryPath, path);
         }
     }
 

@@ -8,6 +8,18 @@ namespace DiagnosticoLag.Tests;
 public sealed class WindowConstructionTests
 {
     [Fact]
+    public void SupportButtonPointsToCafecitoAndIsLocalized()
+    {
+        RunOnStaThread(() =>
+        {
+            using var button = SupportLink.CreateButton();
+
+            Assert.Equal("https://cafecito.app/magusman", SupportLink.Url);
+            Assert.False(string.IsNullOrWhiteSpace(button.Text));
+        });
+    }
+
+    [Fact]
     public void MainWindowBuildsDashboardWithoutLoadingOrWritingUserSettings()
     {
         RunOnStaThread(() =>
@@ -22,6 +34,25 @@ public sealed class WindowConstructionTests
     }
 
     [Fact]
+    public void LatencyChartOffersIndividuallyToggleableVisibleConnections()
+    {
+        RunOnStaThread(() =>
+        {
+            Localization.SetLanguage("es");
+            using var form = new MainForm(DiagnosticSettings.Default);
+            var chart = Assert.Single(Descendants(form).OfType<LatencyChart>());
+            var menuItems = chart.ContextMenuStrip!.Items.OfType<ToolStripMenuItem>().ToArray();
+
+            Assert.Contains(menuItems, item => item.Text == "Router" && item.Checked);
+            var router = Assert.Single(menuItems, item => item.Text == "Router");
+            router.PerformClick();
+            Assert.False(router.Checked);
+            router.PerformClick();
+            Assert.True(router.Checked);
+        });
+    }
+
+    [Fact]
     public void SettingsWindowBuildsLanguageAndGameProfileControls()
     {
         RunOnStaThread(() =>
@@ -29,8 +60,8 @@ public sealed class WindowConstructionTests
             Localization.SetLanguage("es");
             using var form = new SettingsForm(DiagnosticSettings.Default);
             var controls = Descendants(form).ToArray();
-            var languagePicker = Assert.Single(controls.OfType<ComboBox>()
-                .Where(combo => combo.Items.Cast<object>().Any(item => item.ToString() == "Español")));
+            var languagePicker = Assert.Single(controls.OfType<ComboBox>(),
+                combo => combo.Items.Cast<object>().Any(item => item.ToString() == "Español"));
 
             Assert.Equal("Configuración", form.Text);
             Assert.Contains("Español", languagePicker.Items.Cast<object>().Select(item => item.ToString()));

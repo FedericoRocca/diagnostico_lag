@@ -26,6 +26,7 @@ internal sealed class MainForm : Form
     private readonly Button _settingsButton = new();
     private readonly Button _helpButton = new();
     private readonly Button _openLogButton = new();
+    private readonly Button _deleteSessionsButton = new();
     private readonly Label _titleLabel = new();
     private readonly Label _subtitleLabel = new();
     private readonly Icon _applicationIcon;
@@ -119,7 +120,7 @@ internal sealed class MainForm : Form
 
         var heading = new Panel { Dock = DockStyle.Fill };
         ConfigureButton(_settingsButton, "Configuración", Color.FromArgb(78, 96, 120));
-        _settingsButton.Height = 34;
+        _settingsButton.Height = 34;
         _titleLabel.Text = $"{ApplicationName} · v{ApplicationVersion.ToString(3)}";
         _titleLabel.Font = new Font("Segoe UI Semibold", 15F, FontStyle.Bold);
         _titleLabel.ForeColor = Color.FromArgb(24, 39, 61);
@@ -178,6 +179,7 @@ internal sealed class MainForm : Form
             Dock = DockStyle.Fill,
             FlowDirection = FlowDirection.LeftToRight,
             WrapContents = false,
+            AutoScroll = true,
             Padding = new Padding(0, 5, 0, 0)
         };
         ConfigureButton(_startButton, "Iniciar", Color.FromArgb(28, 121, 91));
@@ -197,8 +199,10 @@ internal sealed class MainForm : Form
         _openLogButton.AutoSize = true;
         _openLogButton.Height = 34;
         _openLogButton.Margin = new Padding(0, 0, 0, 0);
+        ConfigureButton(_deleteSessionsButton, "Eliminar sesiones", Color.FromArgb(145, 76, 55));
+        _deleteSessionsButton.Margin = new Padding(0, 0, 0, 0);
         toolbar.Controls.AddRange([_startButton, _pauseButton, _resumeButton, _finishButton, _reportButton,
-            _exportReportButton, _exportCsvButton, _openLogButton]);
+            _exportReportButton, _exportCsvButton, _openLogButton, _deleteSessionsButton]);
         layout.Controls.Add(toolbar, 0, 3);
 
         var bottom = new BufferedTableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = new Padding(0, 6, 0, 0) };
@@ -229,6 +233,7 @@ internal sealed class MainForm : Form
         _exportCsvButton.Click += (_, _) => ExportCsv();
         _settingsButton.Click += (_, _) => ShowSettings();
         _openLogButton.Click += (_, _) => OpenLog();
+        _deleteSessionsButton.Click += (_, _) => ShowSessionCleanup();
         helpButton.Click += (_, _) => ShowAbout();
     }
 
@@ -237,7 +242,12 @@ internal sealed class MainForm : Form
         var message = $"{ApplicationName} · v{ApplicationVersion.ToString(3)}" +
                       Environment.NewLine + Environment.NewLine +
                       Localization.T("Herramienta de diagnóstico de red para gaming. Mide la latencia y la pérdida de paquetes hacia el router y destinos de Internet, muestra su evolución en tiempo real y ofrece estadísticas y un diagnóstico para ayudar a detectar problemas de conexión.\n\nLas sesiones pueden pausarse, generar informes y exportarse a archivos de texto o CSV.");
-        MessageBox.Show(this, message, Localization.F("Acerca de {0}", ApplicationName), MessageBoxButtons.OK, MessageBoxIcon.Information);
+        message += Environment.NewLine + Environment.NewLine + Localization.T("¿Te resulta útil? Podés invitarme un café en cafecito.app.");
+        var answer = MessageBox.Show(this, message, Localization.F("Acerca de {0}", ApplicationName), MessageBoxButtons.YesNo, MessageBoxIcon.Information, MessageBoxDefaultButton.Button2);
+        if (answer == DialogResult.Yes)
+        {
+            SupportLink.Open(this);
+        }
     }
 
     private void ConfigureGrid()
@@ -298,6 +308,8 @@ internal sealed class MainForm : Form
         _exportReportButton.Text = Localization.T("Exportar informe");
         _exportCsvButton.Text = Localization.T("Exportar CSV");
         _openLogButton.Text = Localization.T("Carpeta de sesiones");
+        _deleteSessionsButton.Text = Localization.T("Eliminar sesiones");
+        _deleteSessionsButton.Enabled = _session is null;
         _status.Text = Localization.T(_status.Text);
         RefreshGridHeaders();
         _chart.ApplyLocalization();
@@ -795,6 +807,12 @@ internal sealed class MainForm : Form
         }
     }
 
+    private void ShowSessionCleanup()
+    {
+        using var dialog = new SessionCleanupForm(_settings.LogDirectory, _settings.CsvDirectory);
+        dialog.ShowDialog(this);
+    }
+
     private void AppendLog(string text)
     {
         if (!_loggingAvailable)
@@ -948,6 +966,7 @@ internal sealed class MainForm : Form
         _exportReportButton.Enabled = active || _lastReport is not null;
         _exportCsvButton.Enabled = _sessionCsvPath is not null;
         _settingsButton.Enabled = !active;
+        _deleteSessionsButton.Enabled = !active;
     }
 
     private void OnFormClosing(object? sender, FormClosingEventArgs e)
@@ -1048,6 +1067,139 @@ internal sealed class BufferedRichTextBox : RichTextBox
     private static extern IntPtr SendMessage(IntPtr hWnd, int message, IntPtr wParam, IntPtr lParam);
 }
 
+internal sealed class SessionCleanupForm : Form
+{
+    private readonly string[] _directories;
+    private readonly Label _sizeLabel = new();
+    private readonly ComboBox _range = new();
+    private readonly Button _delete = new();
+
+    public SessionCleanupForm(string logDirectory, string csvDirectory)
+    {
+        _directories = new[] { logDirectory, csvDirectory }.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        Text = Localization.T("Eliminar sesiones");
+        StartPosition = FormStartPosition.CenterParent;
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        MaximizeBox = false;
+        MinimizeBox = false;
+        ClientSize = new Size(470, 225);
+        Font = new Font("Segoe UI", 9F);
+
+        var content = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            Padding = new Padding(16),
+            ColumnCount = 1,
+            RowCount = 5
+        };
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        content.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+
+        var description = new Label
+        {
+            Text = Localization.T("Archivos generados por las sesiones"),
+            Dock = DockStyle.Fill,
+            AutoSize = true
+        };
+        _sizeLabel.Dock = DockStyle.Fill;
+        _range.Dock = DockStyle.Fill;
+        _range.DropDownStyle = ComboBoxStyle.DropDownList;
+        _range.Items.AddRange([
+            Localization.T("Sesiones anteriores a 7 días"),
+            Localization.T("Sesiones anteriores a 30 días"),
+            Localization.T("Sesiones anteriores a 90 días"),
+            Localization.T("Todas las sesiones")
+        ]);
+        _range.SelectedIndex = 0;
+        _range.SelectedIndexChanged += (_, _) => UpdateSummary();
+
+        var folderLabel = new Label
+        {
+            Text = $"{Localization.T("Carpeta de registros:")} {logDirectory}{Environment.NewLine}{Localization.T("Carpeta de archivos CSV:")} {csvDirectory}",
+            Dock = DockStyle.Fill,
+            AutoEllipsis = true
+        };
+        _delete.Text = Localization.T("Eliminar");
+        _delete.AutoSize = true;
+        _delete.Anchor = AnchorStyles.Right;
+        _delete.Click += (_, _) => DeleteSelectedFiles();
+
+        content.Controls.Add(description, 0, 0);
+        content.Controls.Add(_sizeLabel, 0, 1);
+        content.Controls.Add(_range, 0, 2);
+        content.Controls.Add(folderLabel, 0, 3);
+        content.Controls.Add(_delete, 0, 4);
+        Controls.Add(content);
+        AcceptButton = _delete;
+        CancelButton = new Button { DialogResult = DialogResult.Cancel };
+        UpdateSummary();
+    }
+
+    private void UpdateSummary()
+    {
+        var files = GetSessionFiles();
+        var total = files.Sum(file => file.Length);
+        _sizeLabel.Text = Localization.F("{0} archivos · {1}", files.Count, FormatSize(total));
+        _delete.Enabled = files.Count > 0;
+    }
+
+    private List<FileInfo> GetSessionFiles()
+    {
+        var cleanupRange = (SessionCleanupRange)_range.SelectedIndex;
+        return SessionFileCleanup.GetFiles(_directories, cleanupRange, DateTime.Now).ToList();
+    }
+
+    private void DeleteSelectedFiles()
+    {
+        var files = GetSessionFiles();
+        if (files.Count == 0)
+        {
+            return;
+        }
+
+        var answer = MessageBox.Show(this,
+            Localization.F("¿Eliminar {0} archivos y liberar {1}?", files.Count, FormatSize(files.Sum(file => file.Length))),
+            Localization.T("Confirmar eliminación"), MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+        if (answer != DialogResult.Yes)
+        {
+            return;
+        }
+
+        try
+        {
+            foreach (var file in files)
+            {
+                file.Delete();
+            }
+
+            UpdateSummary();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, exception.Message, Localization.T("No se pudieron eliminar las sesiones"),
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            UpdateSummary();
+        }
+    }
+
+    private static string FormatSize(long bytes)
+    {
+        var size = (double)bytes;
+        var units = new[] { "B", "KB", "MB", "GB" };
+        var unit = 0;
+        while (size >= 1024 && unit < units.Length - 1)
+        {
+            size /= 1024;
+            unit++;
+        }
+
+        return $"{size:F1} {units[unit]}";
+    }
+}
+
 internal sealed class ReportForm : Form
 {
     public ReportForm(string report, MonitorSnapshot snapshot)
@@ -1079,6 +1231,9 @@ internal sealed class ReportForm : Form
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 46, FlowDirection = FlowDirection.RightToLeft };
         buttons.Controls.Add(close);
         buttons.Controls.Add(copy);
+        var support = SupportLink.CreateButton();
+        support.Margin = new Padding(0, 6, 8, 6);
+        buttons.Controls.Add(support);
         Controls.Add(tabs);
         Controls.Add(buttons);
         copy.Click += (_, _) => Clipboard.SetText(report);
@@ -1347,6 +1502,8 @@ internal sealed class LatencyChart : Control
     };
     private readonly ToolTip _hoverTip = new() { InitialDelay = 250, ReshowDelay = 100, AutoPopDelay = 10000, ShowAlways = true };
     private readonly ContextMenuStrip _viewMenu = new();
+    private readonly Dictionary<string, ToolStripMenuItem> _seriesMenuItems = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _hiddenSeriesKeys = new(StringComparer.Ordinal);
     private DateTime? _sessionStartedAt;
     private string? _lastHoverText;
     private TimeSpan? _viewDuration;
@@ -1360,6 +1517,12 @@ internal sealed class LatencyChart : Control
         _viewMenu.Items.Add(Localization.T("Últimos 15 minutos"), null, (_, _) => SetViewDuration(TimeSpan.FromMinutes(15)));
         _viewMenu.Items.Add(Localization.T("Última hora"), null, (_, _) => SetViewDuration(TimeSpan.FromHours(1)));
         _viewMenu.Items.Add(Localization.T("Últimas 6 horas"), null, (_, _) => SetViewDuration(TimeSpan.FromHours(6)));
+        _viewMenu.Items.Add(new ToolStripSeparator());
+        _viewMenu.Items.Add(new ToolStripMenuItem(Localization.T("Conexiones visibles")) { Enabled = false });
+        foreach (var key in new[] { "router", "cloudflare-icmp", "google-icmp" })
+        {
+            AddSeriesMenuItem(key);
+        }
         ContextMenuStrip = _viewMenu;
         MouseMove += ShowHoveredSeries;
         MouseLeave += (_, _) =>
@@ -1382,6 +1545,11 @@ internal sealed class LatencyChart : Control
         {
             var label = _labels[key];
             _labels[key] = (Localization.T(label.Name), label.Color);
+            _seriesMenuItems[key].Text = _labels[key].Name;
+        }
+        foreach (var key in _gameSeriesKeys.Where(_seriesMenuItems.ContainsKey))
+        {
+            _seriesMenuItems[key].Text = Localization.T(_labels[key].Name);
         }
 
         Invalidate();
@@ -1398,8 +1566,18 @@ internal sealed class LatencyChart : Control
         {
             _series.Remove(key);
             _labels.Remove(key);
+            if (_seriesMenuItems.Remove(key, out var menuItem))
+            {
+                _viewMenu.Items.Remove(menuItem);
+                menuItem.Dispose();
+            }
         }
 
+        _hiddenSeriesKeys.Clear();
+        foreach (var item in _seriesMenuItems.Values)
+        {
+            item.Checked = true;
+        }
         _events.Clear();
         _sessionStartedAt = startedAt;
         _gameSeriesKeys.Clear();
@@ -1422,6 +1600,7 @@ internal sealed class LatencyChart : Control
                 _series.Add(key, new List<SamplePoint>());
                 var hue = (int)((uint)StringComparer.Ordinal.GetHashCode(target.Target.GameProfileId!) % 360);
                 _labels.Add(key, (target.Target.Name, ColorFromHue(hue)));
+                AddSeriesMenuItem(key);
             }
             else
             {
@@ -1491,12 +1670,20 @@ internal sealed class LatencyChart : Control
         DrawTimeAxis(graphics, plot, viewStart, now, durationSeconds, gridPen, textBrush, font);
         graphics.DrawRectangle(borderPen, plot);
         var legendX = plot.Left + 6;
+        var legendY = 29;
         foreach (var (key, label) in _labels.Where(item => IsSeriesEnabled(item.Key)))
         {
             using var legendBrush = new SolidBrush(label.Color);
-            graphics.FillEllipse(legendBrush, legendX, 33, 8, 8);
-            graphics.DrawString(label.Name, font, textBrush, legendX + 12, 29);
-            legendX += 95;
+            var labelWidth = graphics.MeasureString(label.Name, font).Width + 25;
+            if (legendX + labelWidth > ClientSize.Width - 8 && legendX > plot.Left + 6)
+            {
+                legendX = plot.Left + 6;
+                legendY += 18;
+            }
+
+            graphics.FillEllipse(legendBrush, legendX, legendY + 4, 8, 8);
+            graphics.DrawString(label.Name, font, textBrush, legendX + 12, legendY);
+            legendX += (int)Math.Ceiling(labelWidth);
             var values = _series[key];
             var points = new List<PointF>();
             var startIndex = FindFirstAtOrAfter(values, viewStart);
@@ -1689,7 +1876,22 @@ internal sealed class LatencyChart : Control
     {
         const int left = 48;
         const int right = 16;
-        const int top = 50;
+        var visibleLabels = _labels.Where(item => IsSeriesEnabled(item.Key)).Select(item => item.Value.Name).ToArray();
+        var estimatedRows = 1;
+        var rowWidth = left + 6;
+        foreach (var label in visibleLabels)
+        {
+            var itemWidth = Math.Max(55, label.Length * 7 + 25);
+            if (rowWidth + itemWidth > ClientSize.Width - 8 && rowWidth > left + 6)
+            {
+                estimatedRows++;
+                rowWidth = left + 6;
+            }
+
+            rowWidth += itemWidth;
+        }
+
+        var top = 50 + (estimatedRows - 1) * 18;
         const int bottom = 40;
         return new Rectangle(left, top, Math.Max(1, ClientSize.Width - left - right),
             Math.Max(1, ClientSize.Height - top - bottom));
@@ -1701,6 +1903,37 @@ internal sealed class LatencyChart : Control
         _lastHoverText = null;
         _hoverTip.Hide(this);
         Invalidate();
+    }
+
+    private void AddSeriesMenuItem(string key)
+    {
+        if (_seriesMenuItems.ContainsKey(key) || !_labels.TryGetValue(key, out var label))
+        {
+            return;
+        }
+
+        var item = new ToolStripMenuItem(label.Name)
+        {
+            CheckOnClick = true,
+            Checked = !_hiddenSeriesKeys.Contains(key)
+        };
+        item.Click += (_, _) =>
+        {
+            if (item.Checked)
+            {
+                _hiddenSeriesKeys.Remove(key);
+            }
+            else
+            {
+                _hiddenSeriesKeys.Add(key);
+            }
+
+            _lastHoverText = null;
+            _hoverTip.Hide(this);
+            Invalidate();
+        };
+        _seriesMenuItems.Add(key, item);
+        _viewMenu.Items.Add(item);
     }
 
     private int GetLatencyScale()
@@ -1721,7 +1954,8 @@ internal sealed class LatencyChart : Control
     }
 
     private bool IsSeriesEnabled(string key) =>
-        key is "router" or "cloudflare-icmp" or "google-icmp" || _gameSeriesKeys.Contains(key);
+        (key is "router" or "cloudflare-icmp" or "google-icmp" || _gameSeriesKeys.Contains(key)) &&
+        !_hiddenSeriesKeys.Contains(key);
 
     private static bool IsGameSeries(string key) =>
         key is not ("router" or "cloudflare-icmp" or "google-icmp");

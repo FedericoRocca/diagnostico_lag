@@ -16,7 +16,10 @@ internal sealed record StatSummary(
 
 internal sealed class LatencyStatistics
 {
-    private readonly int[] _histogram = new int[1001];
+    private const int InitialHistogramSize = 1001;
+    private const int MaximumTrackedMilliseconds = 60_000;
+
+    private int[] _histogram = new int[InitialHistogramSize];
     private int? _previous;
     private long _latencySum;
     private long _differenceSum;
@@ -59,7 +62,13 @@ internal sealed class LatencyStatistics
         }
 
         _previous = milliseconds;
-        _histogram[Math.Min(milliseconds, 1000)]++;
+        var bucket = Math.Min(milliseconds, MaximumTrackedMilliseconds);
+        if (bucket >= _histogram.Length)
+        {
+            Array.Resize(ref _histogram, Math.Min(MaximumTrackedMilliseconds + 1, Math.Max(bucket + 1, _histogram.Length * 2)));
+        }
+
+        _histogram[bucket]++;
         if (milliseconds >= 120)
         {
             _spikes120++;
@@ -105,6 +114,6 @@ internal sealed class LatencyStatistics
             }
         }
 
-        return 1000;
+        return _histogram.Length - 1;
     }
 }

@@ -349,17 +349,7 @@ internal sealed class DiagnosticSession
         var warnings = new List<DiagnosticFinding>();
         var router = values["router"];
 
-        if (router.LossPercent >= 5) localProblems.Add(Finding(Localization.F("Router: pérdida de paquetes ({0}/{1}, {2}%).", router.Lost, router.Samples, router.LossPercent), "La pérdida ya aparece en el salto entre el equipo y el router. Puede deberse a señal Wi-Fi/interferencias, adaptador de red, cable o router; por sí sola no identifica cuál."));
-        if (router.Average > 20) localProblems.Add(Finding(Localization.F("Router: latencia media alta ({0} ms).", router.Average), "La latencia elevada hacia el router ocurre dentro de la red local. Revisá Wi-Fi, carga del router y enlace Ethernet; no apunta por sí sola a un problema del proveedor."));
-        if (router.Jitter > 8) localProblems.Add(Finding(Localization.F("Router: jitter alto ({0} ms).", router.Jitter), "Las respuestas al router varían mucho entre sondeos, lo que puede sentirse como microcortes. Interferencias Wi-Fi, congestión local o carga del router son causas posibles."));
-        if (HasFrequentSpikes(router)) localProblems.Add(Finding(Localization.T("Router: se registraron picos frecuentes de latencia."), "Los picos repetidos ya están presentes en el primer salto local. Compará Ethernet con Wi-Fi y revisá si hay tráfico o tareas que coinciden con esos momentos."));
-        if (router.Maximum >= 150) warnings.Add(Finding(Localization.F("Router: pico máximo aislado de {0} ms.", router.Maximum), "Se observó una respuesta muy lenta aislada, pero un máximo puntual no demuestra un problema sostenido. Contrastalo con P95, jitter y la gráfica."));
-        if (router.P95 > 10) warnings.Add(Finding(Localization.F("Router: P95 de {0} ms.", router.P95), "Al menos el 5% de las respuestas al router fue igual o más lenta. Puede señalar variabilidad local aunque el promedio sea bajo."));
-        if (router.P99 > 30) warnings.Add(Finding(Localization.F("Router: P99 de {0} ms.", router.P99), "La cola más lenta de las respuestas al router presenta demoras. Mirá la frecuencia y el momento de los picos antes de atribuirlos a un problema continuo."));
-        if (router.Jitter > 5 && router.Jitter <= 8) warnings.Add(Finding(Localization.F("Router: jitter de {0} ms, por encima de lo deseable.", router.Jitter), "Hay variación moderada entre respuestas locales. Si coincide con el lag, probá Ethernet para distinguir Wi-Fi de otros factores."));
-        if (router.LossPercent > 0.5 && router.LossPercent < 5) warnings.Add(Finding(Localization.F("Router: pérdida de paquetes de {0}%.", router.LossPercent), "Algunas sondas al router no respondieron. Una cantidad baja puede ser transitoria; si persiste, revisá señal, cable y adaptador."));
-        if (Connection.Type == "Wi-Fi" && Connection.WifiSignal is < 50)
-            warnings.Add(Finding(Localization.F("Señal Wi-Fi baja ({0}%); podría causar picos.", Connection.WifiSignal), "Una señal débil puede provocar retransmisiones, variaciones y pérdida en la red local. Acercate al punto de acceso o compará con una conexión Ethernet."));
+        AddRouterDiagnosis(router, Connection, localProblems, warnings);
 
         AddInternetDiagnosis("Destino 1", "cloudflare-icmp", "cloudflare-tcp", values, ispProblems, warnings);
         AddInternetDiagnosis("Destino 2", "google-icmp", "google-tcp", values, ispProblems, warnings);
@@ -503,6 +493,35 @@ internal sealed class DiagnosticSession
         }
     }
 
+    internal sealed record RouterThresholds(
+        double Average, double JitterProblem, double JitterWarning, int P95, int P99, int Maximum);
+
+    internal static readonly RouterThresholds WiredRouterThresholds = new(20, 8, 5, 10, 30, 150);
+    internal static readonly RouterThresholds WifiRouterThresholds = new(30, 12, 8, 20, 50, 200);
+
+    internal static RouterThresholds RouterThresholdsFor(ConnectionInfo connection) =>
+        connection.Type == "Wi-Fi" ? WifiRouterThresholds : WiredRouterThresholds;
+
+    internal static void AddRouterDiagnosis(
+        StatSummary router,
+        ConnectionInfo connection,
+        List<DiagnosticFinding> localProblems,
+        List<DiagnosticFinding> warnings)
+    {
+        var limits = RouterThresholdsFor(connection);
+        if (router.LossPercent >= 5) localProblems.Add(Finding(Localization.F("Router: pérdida de paquetes ({0}/{1}, {2}%).", router.Lost, router.Samples, router.LossPercent), "La pérdida ya aparece en el salto entre el equipo y el router. Puede deberse a señal Wi-Fi/interferencias, adaptador de red, cable o router; por sí sola no identifica cuál."));
+        if (router.Average > limits.Average) localProblems.Add(Finding(Localization.F("Router: latencia media alta ({0} ms).", router.Average), "La latencia elevada hacia el router ocurre dentro de la red local. Revisá Wi-Fi, carga del router y enlace Ethernet; no apunta por sí sola a un problema del proveedor."));
+        if (router.Jitter > limits.JitterProblem) localProblems.Add(Finding(Localization.F("Router: jitter alto ({0} ms).", router.Jitter), "Las respuestas al router varían mucho entre sondeos, lo que puede sentirse como microcortes. Interferencias Wi-Fi, congestión local o carga del router son causas posibles."));
+        if (HasFrequentSpikes(router)) localProblems.Add(Finding(Localization.T("Router: se registraron picos frecuentes de latencia."), "Los picos repetidos ya están presentes en el primer salto local. Compará Ethernet con Wi-Fi y revisá si hay tráfico o tareas que coinciden con esos momentos."));
+        if (router.Maximum >= limits.Maximum) warnings.Add(Finding(Localization.F("Router: pico máximo aislado de {0} ms.", router.Maximum), "Se observó una respuesta muy lenta aislada, pero un máximo puntual no demuestra un problema sostenido. Contrastalo con P95, jitter y la gráfica."));
+        if (router.P95 > limits.P95) warnings.Add(Finding(Localization.F("Router: P95 de {0} ms.", router.P95), "Al menos el 5% de las respuestas al router fue igual o más lenta. Puede señalar variabilidad local aunque el promedio sea bajo."));
+        if (router.P99 > limits.P99) warnings.Add(Finding(Localization.F("Router: P99 de {0} ms.", router.P99), "La cola más lenta de las respuestas al router presenta demoras. Mirá la frecuencia y el momento de los picos antes de atribuirlos a un problema continuo."));
+        if (router.Jitter > limits.JitterWarning && router.Jitter <= limits.JitterProblem) warnings.Add(Finding(Localization.F("Router: jitter de {0} ms, por encima de lo deseable.", router.Jitter), "Hay variación moderada entre respuestas locales. Si coincide con el lag, probá Ethernet para distinguir Wi-Fi de otros factores."));
+        if (router.LossPercent > 0.5 && router.LossPercent < 5) warnings.Add(Finding(Localization.F("Router: pérdida de paquetes de {0}%.", router.LossPercent), "Algunas sondas al router no respondieron. Una cantidad baja puede ser transitoria; si persiste, revisá señal, cable y adaptador."));
+        if (connection.Type == "Wi-Fi" && connection.WifiSignal is < 50)
+            warnings.Add(Finding(Localization.F("Señal Wi-Fi baja ({0}%); podría causar picos.", connection.WifiSignal), "Una señal débil puede provocar retransmisiones, variaciones y pérdida en la red local. Acercate al punto de acceso o compará con una conexión Ethernet."));
+    }
+
     private static DiagnosticFinding Finding(string text, string explanation) =>
         new(text, Localization.T(explanation));
 
@@ -616,7 +635,7 @@ internal sealed class DiagnosticSession
     [DllImport("iphlpapi.dll", ExactSpelling = true)]
     private static extern uint GetExtendedTcpTable(IntPtr table, ref int size, bool sort, int family, int tableClass, uint reserved);
 
-    private static IEnumerable<TcpConnection> ReadEstablishedConnections()
+    internal static IEnumerable<TcpConnection> ReadEstablishedConnections()
     {
         foreach (var connection in ReadTcpTable(AddressFamily.InterNetwork, 24))
         {
@@ -661,7 +680,7 @@ internal sealed class DiagnosticSession
         throw new IOException("La tabla de conexiones TCP cambió durante la consulta.");
     }
 
-    private static List<TcpConnection> ParseTcpTable(IntPtr buffer, AddressFamily family, int rowSize)
+    internal static List<TcpConnection> ParseTcpTable(IntPtr buffer, AddressFamily family, int rowSize)
     {
         var connections = new List<TcpConnection>();
         var count = Marshal.ReadInt32(buffer);
@@ -826,7 +845,7 @@ internal sealed class DiagnosticSession
         }
 
         var isWifi = network.NetworkInterfaceType == NetworkInterfaceType.Wireless80211;
-        var wifi = isWifi ? ReadWifiDetails() : (Ssid: null, Signal: (int?)null);
+        var wifi = isWifi ? ReadWifiDetails(network.Id) : (Ssid: null, Signal: (int?)null);
         var detail = network.Name;
         if (isWifi)
         {
@@ -843,11 +862,110 @@ internal sealed class DiagnosticSession
         return (gateway.ToString(), new ConnectionInfo(isWifi ? "Wi-Fi" : "Ethernet/cable", detail, wifi.Signal));
     }
 
-    private static (string? Ssid, int? Signal) ReadWifiDetails()
+    private static (string? Ssid, int? Signal) ReadWifiDetails(string interfaceId)
     {
-        var output = RunNetsh();
-        var ssidMatch = Regex.Match(output, @"(?im)^\s*SSID\s*:\s*(?<ssid>.+?)\s*$");
-        var signalMatch = Regex.Match(output, @"(?im)^\s*(?:Signal|Señal)\s*:\s*(?<value>\d{1,3})\s*%");
+        if (Guid.TryParse(interfaceId, out var interfaceGuid))
+        {
+            try
+            {
+                var native = ReadWifiDetailsNative(interfaceGuid);
+                if (native.Signal.HasValue || !string.IsNullOrWhiteSpace(native.Ssid))
+                {
+                    return native;
+                }
+            }
+            catch (Exception exception) when (exception is DllNotFoundException or EntryPointNotFoundException or
+                                                  System.ComponentModel.Win32Exception or ArgumentException)
+            {
+                Trace.TraceWarning($"La API nativa de Wi-Fi no está disponible; se usa netsh: {exception.Message}");
+            }
+        }
+
+        return ParseWifiDetails(RunNetsh(), interfaceId);
+    }
+
+    [DllImport("wlanapi.dll")]
+    private static extern uint WlanOpenHandle(uint clientVersion, IntPtr reserved, out uint negotiatedVersion, out IntPtr clientHandle);
+
+    [DllImport("wlanapi.dll")]
+    private static extern uint WlanCloseHandle(IntPtr clientHandle, IntPtr reserved);
+
+    [DllImport("wlanapi.dll")]
+    private static extern uint WlanQueryInterface(IntPtr clientHandle, ref Guid interfaceGuid, int opCode,
+        IntPtr reserved, out int dataSize, out IntPtr data, IntPtr opcodeValueType);
+
+    [DllImport("wlanapi.dll")]
+    private static extern void WlanFreeMemory(IntPtr memory);
+
+    private const int WlanIntfOpcodeCurrentConnection = 7;
+    private const int WlanAssociationOffset = 520;
+    private const int WlanSignalQualityOffset = WlanAssociationOffset + 56;
+
+    private static (string? Ssid, int? Signal) ReadWifiDetailsNative(Guid interfaceGuid)
+    {
+        var openResult = WlanOpenHandle(2, IntPtr.Zero, out _, out var handle);
+        if (openResult != 0)
+        {
+            throw new System.ComponentModel.Win32Exception((int)openResult);
+        }
+
+        try
+        {
+            var result = WlanQueryInterface(handle, ref interfaceGuid, WlanIntfOpcodeCurrentConnection,
+                IntPtr.Zero, out var size, out var data, IntPtr.Zero);
+            if (result != 0)
+            {
+                return (null, null);
+            }
+
+            try
+            {
+                if (size < WlanSignalQualityOffset + 4)
+                {
+                    return (null, null);
+                }
+
+                var ssidLength = Math.Clamp(Marshal.ReadInt32(data, WlanAssociationOffset), 0, 32);
+                var ssidBytes = new byte[ssidLength];
+                Marshal.Copy(data + WlanAssociationOffset + 4, ssidBytes, 0, ssidLength);
+                var signal = Marshal.ReadInt32(data, WlanSignalQualityOffset);
+                return (ssidLength == 0 ? null : System.Text.Encoding.UTF8.GetString(ssidBytes),
+                    signal is >= 0 and <= 100 ? signal : null);
+            }
+            finally
+            {
+                WlanFreeMemory(data);
+            }
+        }
+        finally
+        {
+            _ = WlanCloseHandle(handle, IntPtr.Zero);
+        }
+    }
+
+    internal static (string? Ssid, int? Signal) ParseWifiDetails(string output, string? interfaceId = null)
+    {
+        var scope = output;
+        var guidMatches = Regex.Matches(output, @"(?im)^\s*GUID\s*:\s*(?<guid>\S+)\s*$");
+        if (guidMatches.Count > 1 && !string.IsNullOrWhiteSpace(interfaceId))
+        {
+            for (var index = 0; index < guidMatches.Count; index++)
+            {
+                if (!string.Equals(guidMatches[index].Groups["guid"].Value.Trim('{', '}'),
+                        interfaceId.Trim('{', '}'), StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var start = guidMatches[index].Index;
+                var end = index + 1 < guidMatches.Count ? guidMatches[index + 1].Index : output.Length;
+                scope = output[start..end];
+                break;
+            }
+        }
+
+        var ssidMatch = Regex.Match(scope, @"(?im)^\s*SSID\s*:\s*(?<ssid>.+?)\s*$");
+        var signalMatch = Regex.Match(scope, @"(?m)^\s*[^:\r\n]+:\s*(?<value>\d{1,3})\s*%\s*$");
         var ssid = ssidMatch.Success ? ssidMatch.Groups["ssid"].Value.Trim() : null;
         int? signal = signalMatch.Success && int.TryParse(signalMatch.Groups["value"].Value, out var value) ? value : null;
         return (ssid, signal);
@@ -919,23 +1037,56 @@ internal sealed class DiagnosticSession
         }
     }
 
+    private const int IspProbeFirstTtl = 2;
+    private const int IspProbeLastTtl = 8;
+    private const int IspProbeAttemptsPerHop = 2;
+
     private static async Task<string?> FindIspFirstHopAsync(string router, string destination, CancellationToken cancellationToken)
     {
         using var ping = new Ping();
-        for (var ttl = 2; ttl <= 6; ttl++)
+        return await FindIspFirstHopAsync(router, async (ttl, token) =>
         {
-            cancellationToken.ThrowIfCancellationRequested();
             try
             {
                 var reply = await ping.SendPingAsync(destination, TimeSpan.FromMilliseconds(800),
-                    new byte[32], new PingOptions(ttl, true), cancellationToken);
-                if (reply.Status == IPStatus.TtlExpired && reply.Address is not null &&
-                    !string.Equals(reply.Address.ToString(), router, StringComparison.OrdinalIgnoreCase))
-                {
-                    return reply.Address.ToString();
-                }
+                    new byte[32], new PingOptions(ttl, true), token);
+                return (reply.Status, reply.Address);
             }
-            catch (PingException) { }
+            catch (PingException)
+            {
+                return (IPStatus.Unknown, null);
+            }
+        }, cancellationToken);
+    }
+
+    internal static async Task<string?> FindIspFirstHopAsync(
+        string router,
+        Func<int, CancellationToken, Task<(IPStatus Status, IPAddress? Address)>> probe,
+        CancellationToken cancellationToken)
+    {
+        for (var ttl = IspProbeFirstTtl; ttl <= IspProbeLastTtl; ttl++)
+        {
+            for (var attempt = 0; attempt < IspProbeAttemptsPerHop; attempt++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var (status, address) = await probe(ttl, cancellationToken);
+                if (status == IPStatus.Success)
+                {
+                    return null;
+                }
+
+                if (status != IPStatus.TtlExpired || address is null)
+                {
+                    continue;
+                }
+
+                if (string.Equals(address.ToString(), router, StringComparison.OrdinalIgnoreCase))
+                {
+                    break;
+                }
+
+                return address.ToString();
+            }
         }
 
         return null;
