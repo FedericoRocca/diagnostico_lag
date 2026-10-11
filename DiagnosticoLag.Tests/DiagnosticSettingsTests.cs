@@ -13,7 +13,15 @@ public sealed class DiagnosticSettingsTests
         Assert.Null(exception);
         Assert.Equal("1.1.1.1", DiagnosticSettings.Default.CloudflareAddress);
         Assert.Equal("8.8.8.8", DiagnosticSettings.Default.GoogleAddress);
+        Assert.True(DiagnosticSettings.Default.UseGoogleDefaultTarget);
+        Assert.True(DiagnosticSettings.Default.UseCloudflareDefaultTarget);
+        Assert.Equal(10, DiagnosticSettings.Default.GameProfiles.Count);
+        Assert.Equal(
+            ["counter-strike-2", "dota-2", "pubg-battlegrounds", "apex-legends", "fivem", "wardogs", "valheim", "arc-raiders", "rust"],
+            DiagnosticSettings.Default.GameProfiles.Skip(1).Select(profile => profile.Id).ToArray());
         Assert.Equal(1000, DiagnosticSettings.Default.SampleIntervalMilliseconds);
+        Assert.False(DiagnosticSettings.Default.StartWithWindows);
+        Assert.False(DiagnosticSettings.Default.StartMonitoringOnLaunch);
     }
 
     [Theory]
@@ -31,7 +39,11 @@ public sealed class DiagnosticSettingsTests
     [InlineData("not a host name !")]
     public void RejectsInvalidProbeHosts(string host)
     {
-        var settings = DiagnosticSettings.Default with { CloudflareAddress = host };
+        var settings = DiagnosticSettings.Default with
+        {
+            CloudflareAddress = host,
+            UseCloudflareDefaultTarget = false
+        };
 
         Assert.Throws<InvalidDataException>(() => DiagnosticSettings.Validate(settings));
     }
@@ -83,12 +95,12 @@ public sealed class DiagnosticSettingsTests
         Assert.Equal(expected with { GameProfiles = [], ChartVisibility = result.Settings.ChartVisibility },
             result.Settings with { GameProfiles = [] });
         var expectedProfile = Assert.Single(expected.GameProfiles);
-        var actualProfile = Assert.Single(result.Settings.GameProfiles);
+        var actualProfile = Assert.Single(result.Settings.GameProfiles, profile => profile.Id == expectedProfile.Id);
         Assert.Equal(expectedProfile.Id, actualProfile.Id);
         Assert.Equal(expectedProfile.Name, actualProfile.Name);
         Assert.Equal(expectedProfile.Enabled, actualProfile.Enabled);
         Assert.Equal(expectedProfile.ProcessNames, actualProfile.ProcessNames);
-        Assert.False(result.NeedsSave);
+        Assert.True(result.NeedsSave);
     }
 
     [Fact]
@@ -130,6 +142,30 @@ public sealed class DiagnosticSettingsTests
         Assert.True(result.NeedsSave);
     }
 
+    [Fact]
+    public void MigratesSavedCustomTargetsWithoutReplacingTheirAddresses()
+    {
+        const string json = """
+            {
+              "CloudflareAddress": "cloudflare.example",
+              "GoogleAddress": "google.example",
+              "SampleIntervalMilliseconds": 1000,
+              "NetworkInterfaceId": null,
+              "Language": "en",
+              "GameProfiles": [],
+              "ChartVisibility": {}
+            }
+            """;
+
+        var result = DiagnosticSettings.Parse(json, "en");
+
+        Assert.False(result.Settings.UseGoogleDefaultTarget);
+        Assert.False(result.Settings.UseCloudflareDefaultTarget);
+        Assert.Equal("google.example", result.Settings.EffectiveGoogleAddress);
+        Assert.Equal("cloudflare.example", result.Settings.EffectiveCloudflareAddress);
+        Assert.True(result.NeedsSave);
+    }
+
     [Theory]
     [InlineData(true, false, true)]
     [InlineData(false, true, true)]
@@ -149,10 +185,29 @@ public sealed class DiagnosticSettingsTests
 
         var result = DiagnosticSettings.Parse(json, "es");
 
-        var profile = Assert.Single(result.Settings.GameProfiles);
+        var profile = Assert.Single(result.Settings.GameProfiles, item => item.Id == GameMonitoringProfile.LeagueOfLegends.Id);
         Assert.Equal(GameMonitoringProfile.LeagueOfLegends.Id, profile.Id);
         Assert.Equal(enabled, profile.Enabled);
+        Assert.Equal(10, result.Settings.GameProfiles.Count);
         Assert.Equal(2000, result.Settings.SampleIntervalMilliseconds);
+        Assert.True(result.NeedsSave);
+    }
+
+    [Fact]
+    public void RemovesRetiredBongoCatProfileFromSavedSettings()
+    {
+        var saved = DiagnosticSettings.Default with
+        {
+            GameProfiles =
+            [
+                new GameMonitoringProfile("bongo-cat", "Bongo Cat", ["BongoCat"], true)
+            ]
+        };
+
+        var result = DiagnosticSettings.Parse(JsonSerializer.Serialize(saved), "en");
+
+        Assert.DoesNotContain(result.Settings.GameProfiles, profile => profile.Id == "bongo-cat");
+        Assert.Equal(10, result.Settings.GameProfiles.Count);
         Assert.True(result.NeedsSave);
     }
 
@@ -189,10 +244,34 @@ public sealed class DiagnosticSettingsTests
             Assert.Equal("es", loaded.Language);
             Assert.False(File.Exists(path + ".tmp"));
         }
+
         finally
         {
             if (Directory.Exists(directory)) Directory.Delete(directory, true);
         }
+    }
+
+    [Fact]
+    public void PersistsStartupPreferences()
+    {
+        var expected = DiagnosticSettings.Default with
+        {
+            StartWithWindows = true,
+            StartMonitoringOnLaunch = true
+        };
+
+        var result = DiagnosticSettings.Parse(JsonSerializer.Serialize(expected), "en");
+
+        Assert.True(result.Settings.StartWithWindows);
+        Assert.True(result.Settings.StartMonitoringOnLaunch);
+        Assert.False(result.NeedsSave);
+    }
+
+    [Fact]
+    public void QuotesStartupCommandExecutablePath()
+    {
+        Assert.Equal("\"C:\\Program Files\\Lagnostics\\Lagnostics.exe\"",
+            WindowsStartup.BuildCommand("C:\\Program Files\\Lagnostics\\Lagnostics.exe"));
     }
 
     [Fact]

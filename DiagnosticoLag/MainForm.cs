@@ -31,6 +31,8 @@ internal sealed class MainForm : Form
     private readonly ToolStripMenuItem _fileMenu = new();
     private readonly ToolStripMenuItem _exitMenu = new();
     private readonly ToolStripMenuItem _settingsMenu = new();
+    private readonly ToolStripMenuItem _gamesMenu = new();
+    private readonly Dictionary<string, ToolStripMenuItem> _gameProfileMenuItems = new(StringComparer.OrdinalIgnoreCase);
     private readonly ToolStripMenuItem _exportMenu = new();
     private readonly ToolStripMenuItem _exportReportMenu = new();
     private readonly ToolStripMenuItem _exportCsvMenu = new();
@@ -109,6 +111,13 @@ internal sealed class MainForm : Form
         };
         FormClosing += OnFormClosing;
         SetMonitoringControls(false, false);
+        Shown += async (_, _) =>
+        {
+            if (_settings.StartMonitoringOnLaunch)
+            {
+                await StartMonitoringAsync();
+            }
+        };
     }
 
     private static Icon LoadApplicationIcon()
@@ -237,11 +246,12 @@ internal sealed class MainForm : Form
     private void BuildMenu()
     {
         _fileMenu.DropDownItems.Add(_exitMenu);
+        BuildGamesMenu();
         _exportMenu.DropDownItems.AddRange([_exportReportMenu, _exportCsvMenu]);
         _sessionsMenu.DropDownItems.AddRange([_openLogMenu, _deleteSessionsMenu]);
         _helpMenu.DropDownItems.Add(_cafecitoMenu);
         _helpMenu.DropDownItems.Add(_aboutMenu);
-        _menuStrip.Items.AddRange([_fileMenu, _settingsMenu, _exportMenu, _sessionsMenu, _helpMenu]);
+        _menuStrip.Items.AddRange([_fileMenu, _settingsMenu, _gamesMenu, _exportMenu, _sessionsMenu, _helpMenu]);
         _menuStrip.Dock = DockStyle.Top;
         _exitMenu.Click += (_, _) => Close();
         _settingsMenu.Click += (_, _) => ShowSettings();
@@ -251,6 +261,65 @@ internal sealed class MainForm : Form
         _deleteSessionsMenu.Click += (_, _) => ShowSessionCleanup();
         _cafecitoMenu.Click += (_, _) => SupportLink.Open(this);
         _aboutMenu.Click += (_, _) => ShowAbout();
+    }
+
+    private void BuildGamesMenu()
+    {
+        foreach (var profile in GameMonitoringProfile.BuiltInProfiles)
+        {
+            var menuItem = new ToolStripMenuItem(profile.Name)
+            {
+                CheckOnClick = true
+            };
+            menuItem.Click += (_, _) => SetGameProfileEnabled(profile.Id, menuItem.Checked);
+            _gameProfileMenuItems.Add(profile.Id, menuItem);
+            _gamesMenu.DropDownItems.Add(menuItem);
+        }
+
+        RefreshGamesMenu();
+    }
+
+    private void RefreshGamesMenu()
+    {
+        foreach (var profile in GameMonitoringProfile.BuiltInProfiles)
+        {
+            if (!_gameProfileMenuItems.TryGetValue(profile.Id, out var menuItem))
+            {
+                continue;
+            }
+
+            var configuredProfile = _settings.GameProfiles.FirstOrDefault(item =>
+                string.Equals(item.Id, profile.Id, StringComparison.OrdinalIgnoreCase));
+            menuItem.Text = configuredProfile?.Name ?? profile.Name;
+            menuItem.Checked = configuredProfile?.Enabled ?? false;
+        }
+    }
+
+    private void SetGameProfileEnabled(string profileId, bool enabled)
+    {
+        var profiles = _settings.GameProfiles.ToArray();
+        var profileIndex = Array.FindIndex(profiles, profile =>
+            string.Equals(profile.Id, profileId, StringComparison.OrdinalIgnoreCase));
+        if (profileIndex < 0)
+        {
+            return;
+        }
+
+        var originalSettings = _settings;
+        profiles[profileIndex] = profiles[profileIndex] with { Enabled = enabled };
+        try
+        {
+            _settings = _settings with { GameProfiles = profiles };
+            _settings.Save();
+            RefreshGamesMenu();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            _settings = originalSettings;
+            RefreshGamesMenu();
+            MessageBox.Show(this, Localization.T(exception.Message), Localization.T("No se pudo guardar la configuración"),
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 
     private void ShowAbout()
@@ -324,6 +393,7 @@ internal sealed class MainForm : Form
         _fileMenu.Text = Localization.T("Archivo");
         _exitMenu.Text = Localization.T("Salir");
         _settingsMenu.Text = Localization.T("Configuración");
+        _gamesMenu.Text = Localization.T("Juegos");
         _exportMenu.Text = Localization.T("Exportar");
         _exportReportMenu.Text = Localization.T("Exportar informe");
         _exportCsvMenu.Text = Localization.T("Exportar CSV");
@@ -1046,6 +1116,7 @@ internal sealed class MainForm : Form
         _settings = dialog.Settings;
         Localization.SetLanguage(_settings.Language);
         ApplyLocalization();
+        RefreshGamesMenu();
         _status.Text = Localization.T("Configuración guardada; se aplicará en la próxima sesión");
     }
 
@@ -1743,6 +1814,18 @@ internal sealed class LatencyChart : Control
         IReadOnlyDictionary<string, int> measurements,
         IReadOnlyList<TargetSnapshot> targets)
     {
+        foreach (var target in targets.Where(target => _labels.ContainsKey(target.Target.Key)))
+        {
+            var label = _labels[target.Target.Key];
+            _labels[target.Target.Key] = (target.Target.Name.EndsWith(" ICMP", StringComparison.Ordinal)
+                ? target.Target.Name[..^5]
+                : target.Target.Name, label.Color);
+            if (_seriesMenuItems.TryGetValue(target.Target.Key, out var menuItem))
+            {
+                menuItem.Text = _labels[target.Target.Key].Name;
+            }
+        }
+
         foreach (var target in targets.Where(item => item.Target.GameProfileId is not null))
         {
             var key = target.Target.Key;
@@ -1790,6 +1873,8 @@ internal sealed class LatencyChart : Control
 
     public bool SupportsSeries(string key) =>
         key is "router" or "cloudflare-icmp" or "google-icmp" || _gameSeriesKeys.Contains(key);
+
+    internal IReadOnlyCollection<string> SeriesKeys => _series.Keys.ToArray();
 
     internal int VisibleEventCount => _events.Count(item => IsSeriesEnabled(item.SeriesKey));
 

@@ -20,7 +20,10 @@ Las preferencias se guardan en `%LOCALAPPDATA%\DiagnosticoLag\configuracion.json
 
 - En el primer inicio, el idioma se elige según el idioma de interfaz del sistema operativo: español si está configurado en español e inglés en los demás casos o si no se puede detectar. La elección queda guardada y se puede cambiar desde Configuración; se utiliza también en diagnósticos, informes y CSV.
 - Destinos externos, intervalo de muestreo e interfaz de red.
+- Perfiles integrados, desactivados por defecto, para los juegos con más jugadores concurrentes en Steam al momento de la actualización: Counter-Strike 2, Dota 2, PUBG: BATTLEGROUNDS, Apex Legends, FiveM, WARDOGS, Valheim, ARC Raiders y Rust. Se pueden activar desde el menú Juegos o Configuración, y los procesos configurados pueden ajustarse si una instalación usa un ejecutable distinto.
 - El intervalo de muestreo se configura en milisegundos, entre 50 y 10000 ms. Las flechas avanzan de 50 en 50, aunque también se puede escribir cualquier valor dentro del rango. Valores de 500 ms o menos muestran una advertencia porque aumentan el tamaño de los logs y el uso de recursos. Las configuraciones antiguas expresadas en segundos se migran automáticamente.
+- Los destinos Google y Cloudflare usan por defecto 8.8.8.8 y 1.1.1.1; se pueden reemplazar por cualquier IP o host desde Configuración.
+- Configuración incluye "Iniciar con Windows" e "Iniciar análisis al iniciar el programa".
 - Perfiles de juegos editables. Cada perfil define el nombre y los nombres de procesos que se detectan; se pueden activar o desactivar. Si un perfil está desactivado, no agrega mediciones a la grilla, al gráfico, a los informes ni a los CSV.
 - En esta primera implementación, si se observa una conexión TCP establecida de un proceso configurado, se sondea su IP remota con ICMP como referencia aproximada de ruta. El endpoint puede ser auxiliar y no el servidor de la partida. No se presenta como ping real del juego; muchos juegos usan UDP y protocolos propios.
 - Carpetas independientes para los registros de sesión y los archivos CSV; también se usan como ubicación inicial al exportar.
