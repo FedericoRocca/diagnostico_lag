@@ -39,7 +39,7 @@ internal sealed record MonitorSnapshot(
 
 internal sealed class DiagnosticSession
 {
-    private const int MaximumGameProfiles = 8;
+    private const int MaximumGameProfiles = 18;
     private const int MaximumProcessNamesPerProfile = 8;
     private const int MaximumActiveEndpointsPerProfile = 2;
     private const int MaximumObservedEndpointsPerProfile = 8;
@@ -72,13 +72,14 @@ internal sealed class DiagnosticSession
         IspAddress = ispAddress;
         Connection = connection;
         _startedAt = startedAt;
+        Metadata = SessionMetadata.Create(startedAt, connection.Type, settings.SampleIntervalMilliseconds);
         _targets = new List<ProbeTarget>
         {
             new("router", "Router/Modem", routerAddress, ProbeType.Icmp),
-            new("cloudflare-icmp", "Destino 1 ICMP", settings.CloudflareAddress, ProbeType.Icmp),
-            new("cloudflare-tcp", "Destino 1 TCP", settings.CloudflareAddress, ProbeType.Tcp),
-            new("google-icmp", "Destino 2 ICMP", settings.GoogleAddress, ProbeType.Icmp),
-            new("google-tcp", "Destino 2 TCP", settings.GoogleAddress, ProbeType.Tcp)
+            new("google-icmp", $"{settings.GoogleTargetName} ICMP", settings.EffectiveGoogleAddress, ProbeType.Icmp),
+            new("google-tcp", $"{settings.GoogleTargetName} TCP", settings.EffectiveGoogleAddress, ProbeType.Tcp),
+            new("cloudflare-icmp", $"{settings.CloudflareTargetName} ICMP", settings.EffectiveCloudflareAddress, ProbeType.Icmp),
+            new("cloudflare-tcp", $"{settings.CloudflareTargetName} TCP", settings.EffectiveCloudflareAddress, ProbeType.Tcp)
         };
 
         if (!string.IsNullOrWhiteSpace(ispAddress))
@@ -97,12 +98,15 @@ internal sealed class DiagnosticSession
     public string? IspAddress { get; }
     public ConnectionInfo Connection { get; }
     public DateTime StartedAt => _startedAt;
+    public SessionMetadata Metadata { get; private set; }
+
+    public void MarkCompleted(string status) => Metadata = Metadata.WithStatus(status);
 
     public static async Task<DiagnosticSession> CreateAsync(DiagnosticSettings settings, CancellationToken cancellationToken)
     {
         var startedAt = DateTime.Now;
-        var (router, connection) = await Task.Run(() => DetectConnection(settings.NetworkInterfaceId, settings.CloudflareAddress), cancellationToken);
-        var isp = await FindIspFirstHopAsync(router, settings.CloudflareAddress, cancellationToken);
+        var (router, connection) = await Task.Run(() => DetectConnection(settings.NetworkInterfaceId, settings.EffectiveGoogleAddress), cancellationToken);
+        var isp = await FindIspFirstHopAsync(router, settings.EffectiveGoogleAddress, cancellationToken);
         return new DiagnosticSession(settings, router, isp, connection, startedAt);
     }
 
@@ -163,17 +167,22 @@ internal sealed class DiagnosticSession
     public string BuildReport(string reportType)
     {
         var snapshot = CurrentSnapshot();
+        var metadata = Metadata.WithStatus(reportType.StartsWith("final", StringComparison.OrdinalIgnoreCase)
+            ? "Finalizada"
+            : Metadata.CompletionStatus);
         var report = new List<string>
         {
             "",
             "=======================================================================",
             Localization.F("INFORME {0} - DIAGNÓSTICO DE RED", Localization.T(reportType).ToUpper(Localization.Culture)),
             "=======================================================================",
+            Localization.T("METADATOS DE LA SESIÓN:"),
+            "",
             $"{Localization.T("Fecha")}: {DateTime.Now:yyyy-MM-dd HH:mm:ss}",
             $"{Localization.T("Duración")}: {FormatDuration(snapshot.Duration)}",
             $"{Localization.T("Conexión")}: {Localization.T(Connection.Type)} ({Connection.Detail})",
             $"{Localization.T("Router")}: {RouterAddress} | {Localization.T("ISP (primer salto)")}: {IspAddress ?? Localization.T("no detectado")}",
-            $"{Localization.T("Destinos externos")}: { _settings.CloudflareAddress} | {_settings.GoogleAddress}",
+            $"{Localization.T("Destinos externos")}: {_settings.GoogleTargetName} ({_settings.EffectiveGoogleAddress}) | {_settings.CloudflareTargetName} ({_settings.EffectiveCloudflareAddress})",
             Localization.T("Las mediciones de juegos son referencias ICMP aproximadas a endpoints TCP observados del proceso; no representan el ping real de la partida."),
             _baseline is null
                 ? $"{Localization.T("Línea base")}: {Localization.F("pendiente ({0} muestras restantes)", Math.Max(0, 60 - _samples))}"
@@ -181,13 +190,14 @@ internal sealed class DiagnosticSession
                     _baseline.Router.Average, _baseline.Router.Jitter, _baseline.Cloudflare.Average, _baseline.Google.Average),
             ""
         };
+        report.InsertRange(5, metadata.ToTextLines().Select(Localization.T));
 
         foreach (var target in snapshot.Targets)
         {
             var s = target.Statistics;
             var lossLabel = Localization.T(target.Target.Type == ProbeType.Tcp ? "Fallos" : "Pérdida");
             var endpoint = target.Target.ObservedPort is int observedPort
-                ? $"{target.Target.Address}:{observedPort} (TCP observado; referencia ICMP)"
+                ? $"{target.Target.Address}:{observedPort} {Localization.T("(TCP observado; referencia ICMP)")}"
                 : target.Target.Type == ProbeType.Tcp
                     ? $"{target.Target.Address}:{target.Target.Port}"
                     : target.Target.Address;
@@ -208,6 +218,8 @@ internal sealed class DiagnosticSession
         }
 
         report.Add("");
+        var health = ConnectionHealth.FromDiagnosis(snapshot.Diagnosis);
+        report.Add(Localization.F("Salud de la conexión: {0}/100 - {1}", health.Score, Localization.T(health.Status)));
         report.Add(Localization.F("DIAGNÓSTICO: {0}", Localization.T(snapshot.Diagnosis.Title)));
         report.Add(Localization.T(snapshot.Diagnosis.Explanation));
         report.AddRange(snapshot.Diagnosis.Findings.Select(finding =>
@@ -218,7 +230,7 @@ internal sealed class DiagnosticSession
         }
 
         report.Add("");
-        report.Add(Localization.F("NOTA: se requieren al menos 30 muestras por destino para incluirlo en el diagnóstico. Se sondea cada {0} segundo(s).", _settings.SampleIntervalSeconds));
+        report.Add(Localization.F("NOTA: se requieren al menos 30 muestras por destino para incluirlo en el diagnóstico. Se sondea cada {0} milisegundos.", _settings.SampleIntervalMilliseconds));
         report.Add(Localization.T("NOTA: el primer salto del ISP es orientativo. Los endpoints de juegos se observan en conexiones TCP de sus procesos y pueden ser auxiliares, no el servidor de partida."));
         report.Add(Localization.T("NOTA: ICMP puede estar filtrado o recibir menor prioridad; las mediciones TCP en el puerto 443 aportan una referencia distinta."));
         if (snapshot.GameEndpoints.Count > 0)
@@ -370,8 +382,8 @@ internal sealed class DiagnosticSession
 
         AddRouterDiagnosis(router, Connection, localProblems, warnings);
 
-        AddInternetDiagnosis("Destino 1", "cloudflare-icmp", "cloudflare-tcp", values, ispProblems, warnings);
-        AddInternetDiagnosis("Destino 2", "google-icmp", "google-tcp", values, ispProblems, warnings);
+        AddInternetDiagnosis(_settings.GoogleTargetName, "google-icmp", "google-tcp", values, ispProblems, warnings);
+        AddInternetDiagnosis(_settings.CloudflareTargetName, "cloudflare-icmp", "cloudflare-tcp", values, ispProblems, warnings);
 
         foreach (var gameTarget in _gameTargets.Values)
         {
@@ -464,8 +476,8 @@ internal sealed class DiagnosticSession
         }
 
         CompareBaseline(Localization.T("Router (últimas muestras)"), recentValues["router"], _baseline.Router, warnings);
-        CompareBaseline(Localization.T("Destino 1 (últimas 60 muestras)"), recentValues["cloudflare-icmp"], _baseline.Cloudflare, warnings);
-        CompareBaseline(Localization.T("Destino 2 (últimas 60 muestras)"), recentValues["google-icmp"], _baseline.Google, warnings);
+        CompareBaseline(Localization.F("{0} (últimas 60 muestras)", _settings.GoogleTargetName), recentValues["google-icmp"], _baseline.Google, warnings);
+        CompareBaseline(Localization.F("{0} (últimas 60 muestras)", _settings.CloudflareTargetName), recentValues["cloudflare-icmp"], _baseline.Cloudflare, warnings);
 
         var baselineRouter = _baseline.Router;
         var currentRouter = recentValues["router"];
@@ -573,7 +585,6 @@ internal sealed class DiagnosticSession
         }
 
         _lastGameScanAt = DateTime.Now;
-        _activeGameEndpoints = Array.Empty<GameObservedEndpoint>();
         try
         {
             var endpoints = await Task.Run(() => FindGameEndpoints(enabledProfiles), cancellationToken);

@@ -8,15 +8,9 @@ namespace DiagnosticoLag.Tests;
 public sealed class WindowConstructionTests
 {
     [Fact]
-    public void SupportButtonPointsToCafecitoAndIsLocalized()
+    public void SupportLinkPointsToCafecito()
     {
-        RunOnStaThread(() =>
-        {
-            using var button = SupportLink.CreateButton();
-
-            Assert.Equal("https://cafecito.app/magusman", SupportLink.Url);
-            Assert.False(string.IsNullOrWhiteSpace(button.Text));
-        });
+        Assert.Equal("https://cafecito.app/magusman", SupportLink.Url);
     }
 
     [Fact]
@@ -32,6 +26,49 @@ public sealed class WindowConstructionTests
             Assert.True(grid.Columns.Count >= 11);
             Assert.IsType<DataGridViewCheckBoxColumn>(grid.Columns["visible"]);
             Assert.Contains(controls, control => control is LatencyChart);
+            var durations = Assert.Single(controls.OfType<ComboBox>(), combo => combo.Items.Count == 5);
+            Assert.Equal(["No limit", "30 seconds", "1 minute", "5 minutes", "15 minutes"],
+                durations.Items.Cast<object>().Select(item => item.ToString() ?? string.Empty).ToArray());
+            var menu = Assert.Single(controls.OfType<MenuStrip>());
+            Assert.Equal(
+                ["File", "Settings", "Games", "Export", "Sessions", "Help"],
+                menu.Items.Cast<ToolStripItem>().Select(item => item.Text ?? string.Empty).ToArray());
+            var games = Assert.Single(menu.Items.Cast<ToolStripMenuItem>(), item => item.Text == "Games");
+            Assert.Equal(10, games.DropDownItems.Count);
+            Assert.Contains(games.DropDownItems.Cast<ToolStripMenuItem>(), item => item.Text == "Counter-Strike 2" && !item.Checked);
+            Assert.DoesNotContain(games.DropDownItems.Cast<ToolStripMenuItem>(), item => item.Text == "Bongo Cat");
+            var export = Assert.Single(menu.Items.Cast<ToolStripMenuItem>(), item => item.Text == "Export");
+            Assert.Equal(["Export report", "Export CSV"], export.DropDownItems.Cast<ToolStripItem>().Select(item => item.Text ?? string.Empty).ToArray());
+            var sessions = Assert.Single(menu.Items.Cast<ToolStripMenuItem>(), item => item.Text == "Sessions");
+            Assert.Equal(["Session folder", "Delete sessions"], sessions.DropDownItems.Cast<ToolStripItem>().Select(item => item.Text ?? string.Empty).ToArray());
+            var help = Assert.Single(menu.Items.Cast<ToolStripMenuItem>(), item => item.Text == "Help");
+            Assert.Equal(["Cafecito", "About"], help.DropDownItems.Cast<ToolStripItem>().Select(item => item.Text ?? string.Empty).ToArray());
+        });
+    }
+
+    [Fact]
+    public void DurationChoicesRefreshWhenLanguageChanges()
+    {
+        RunOnStaThread(() =>
+        {
+            try
+            {
+                Localization.SetLanguage("es");
+                using var form = new MainForm(DiagnosticSettings.Default with { Language = "es" });
+                var durations = Assert.Single(Descendants(form).OfType<ComboBox>(), combo => combo.Items.Count == 5);
+                durations.SelectedIndex = 3;
+
+                Localization.SetLanguage("en");
+                form.ApplyLocalization();
+
+                Assert.Equal("5 minutes", durations.SelectedItem?.ToString());
+                Assert.Equal(["No limit", "30 seconds", "1 minute", "5 minutes", "15 minutes"],
+                    durations.Items.Cast<object>().Select(item => item.ToString() ?? string.Empty).ToArray());
+            }
+            finally
+            {
+                Localization.SetLanguage("es");
+            }
         });
     }
 
@@ -51,6 +88,38 @@ public sealed class WindowConstructionTests
             Assert.False(router.Checked);
             router.PerformClick();
             Assert.True(router.Checked);
+            Assert.True(chart.SupportsSeries("router"));
+            Assert.False(chart.SupportsSeries("isp"));
+            Assert.False(chart.SupportsSeries("target-1-tcp"));
+
+            var timestamp = DateTime.Now;
+            chart.AddSample(timestamp, new Dictionary<string, int>
+            {
+                ["router"] = 150,
+                ["cloudflare-icmp"] = 150,
+                ["game:lol"] = 150
+            }, new[]
+            {
+                new TargetSnapshot(new ProbeTarget("router", "Router", "192.168.0.1", ProbeType.Icmp),
+                    new StatSummary(1, 1, 0, 150, 150, 150, 150, 150, 1, 0, 0, 0)),
+                new TargetSnapshot(new ProbeTarget("cloudflare-icmp", "Cloudflare", "1.1.1.1", ProbeType.Icmp),
+                    new StatSummary(1, 1, 0, 150, 150, 150, 150, 150, 1, 0, 0, 0)),
+                new TargetSnapshot(new ProbeTarget("game:lol", "League of Legends", "203.0.113.42", ProbeType.Icmp,
+                        GameProfileId: "lol", GameProfileName: "League of Legends", ProcessName: "league.exe"),
+                    new StatSummary(1, 1, 0, 150, 150, 150, 150, 150, 1, 0, 0, 0))
+            });
+            chart.SetSeriesVisibility("cloudflare-icmp", false);
+            Assert.Equal(2, chart.VisibleEventCount);
+
+            chart.AddSample(timestamp.AddSeconds(1), new Dictionary<string, int>
+            {
+                ["router"] = 20
+            }, new[]
+            {
+                new TargetSnapshot(new ProbeTarget("router", "Router", "192.168.0.1", ProbeType.Icmp),
+                    new StatSummary(2, 2, 0, 20, 20, 20, 20, 20, 0, 0, 0, 0))
+            });
+            Assert.Contains("game:lol", chart.SeriesKeys);
         });
     }
 
@@ -69,6 +138,55 @@ public sealed class WindowConstructionTests
             Assert.Contains("Español", languagePicker.Items.Cast<object>().Select(item => item.ToString()));
             Assert.Contains("English", languagePicker.Items.Cast<object>().Select(item => item.ToString()));
             Assert.Contains(controls, control => control is CheckedListBox);
+            Assert.Contains(controls.OfType<CheckBox>(), checkBox => checkBox.Text == "Google" && checkBox.Checked);
+            Assert.Contains(controls.OfType<CheckBox>(), checkBox => checkBox.Text == "Cloudflare" && checkBox.Checked);
+            var games = Assert.Single(controls.OfType<CheckedListBox>());
+            Assert.Equal(10, games.Items.Count);
+            Assert.Contains(games.Items.Cast<GameMonitoringProfile>(), profile => profile.Name == "Counter-Strike 2");
+            Assert.DoesNotContain(games.Items.Cast<GameMonitoringProfile>(), profile => profile.Name == "Bongo Cat");
+            Assert.All(Enumerable.Range(0, games.Items.Count), index => Assert.False(games.GetItemChecked(index)));
+            Assert.Contains(controls.OfType<CheckBox>(), checkBox => checkBox.Text == "Iniciar con Windows" && !checkBox.Checked);
+            Assert.Contains(controls.OfType<CheckBox>(), checkBox => checkBox.Text == "Iniciar análisis al iniciar el programa" && !checkBox.Checked);
+            Assert.All(controls.OfType<TextBox>().Where(textBox =>
+                textBox.Text is DiagnosticSettings.DefaultGoogleAddress or DiagnosticSettings.DefaultCloudflareAddress),
+                textBox => Assert.False(textBox.Enabled));
+        });
+    }
+
+    [Fact]
+    public void SamplingIntervalAllowsFiftyMillisecondStepsAndManualInput()
+    {
+        RunOnStaThread(() =>
+        {
+            using var form = new SettingsForm(DiagnosticSettings.Default);
+            var interval = Assert.Single(Descendants(form).OfType<NumericUpDown>());
+
+            Assert.Equal(50, interval.Minimum);
+            Assert.Equal(50, interval.Increment);
+            Assert.False(interval.ReadOnly);
+            interval.Value = 125;
+            Assert.Equal(125, interval.Value);
+        });
+    }
+
+    [Fact]
+    public void SettingsWindowShowsCompleteStartupOptionsInEnglish()
+    {
+        RunOnStaThread(() =>
+        {
+            try
+            {
+                Localization.SetLanguage("en");
+                using var form = new SettingsForm(DiagnosticSettings.Default with { Language = "en" });
+                var labels = Descendants(form).OfType<CheckBox>().Select(checkBox => checkBox.Text).ToArray();
+
+                Assert.Contains("Start with Windows", labels);
+                Assert.Contains("Start monitoring when the application starts", labels);
+            }
+            finally
+            {
+                Localization.SetLanguage("es");
+            }
         });
     }
 

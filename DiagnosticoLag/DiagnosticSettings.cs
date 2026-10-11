@@ -13,6 +13,20 @@ internal sealed record GameMonitoringProfile(string Id, string Name, IReadOnlyLi
 
     public static GameMonitoringProfile LeagueOfLegends { get; } =
         new("league-of-legends", "League of Legends", ["League of Legends"], false);
+
+    public static IReadOnlyList<GameMonitoringProfile> BuiltInProfiles { get; } =
+    [
+        LeagueOfLegends,
+        new("counter-strike-2", "Counter-Strike 2", ["cs2"], false),
+        new("dota-2", "Dota 2", ["dota2"], false),
+        new("pubg-battlegrounds", "PUBG: BATTLEGROUNDS", ["TslGame"], false),
+        new("apex-legends", "Apex Legends", ["r5apex"], false),
+        new("fivem", "FiveM", ["FiveM"], false),
+        new("wardogs", "WARDOGS", ["WARDOGS"], false),
+        new("valheim", "Valheim", ["valheim"], false),
+        new("arc-raiders", "ARC Raiders", ["ArcRaiders"], false),
+        new("rust", "Rust", ["RustClient"], false)
+    ];
 }
 
 internal sealed record DiagnosticSettingsReadResult(DiagnosticSettings Settings, bool NeedsSave);
@@ -20,10 +34,17 @@ internal sealed record DiagnosticSettingsReadResult(DiagnosticSettings Settings,
 internal sealed record DiagnosticSettings(
     string CloudflareAddress,
     string GoogleAddress,
-    int SampleIntervalSeconds,
+    int SampleIntervalMilliseconds,
     string? NetworkInterfaceId)
 {
-    public IReadOnlyList<GameMonitoringProfile> GameProfiles { get; init; } = [GameMonitoringProfile.LeagueOfLegends];
+    public const string DefaultCloudflareAddress = "1.1.1.1";
+    public const string DefaultGoogleAddress = "8.8.8.8";
+
+    public bool UseGoogleDefaultTarget { get; init; } = true;
+    public bool UseCloudflareDefaultTarget { get; init; } = true;
+    public bool StartWithWindows { get; init; }
+    public bool StartMonitoringOnLaunch { get; init; }
+    public IReadOnlyList<GameMonitoringProfile> GameProfiles { get; init; } = GameMonitoringProfile.BuiltInProfiles;
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool DetectLeague { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
@@ -37,7 +58,12 @@ internal sealed record DiagnosticSettings(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "DiagnosticoLag", "sesiones");
 
-    public static DiagnosticSettings Default { get; } = new("1.1.1.1", "8.8.8.8", 1, null)
+    public string EffectiveGoogleAddress => UseGoogleDefaultTarget ? DefaultGoogleAddress : GoogleAddress;
+    public string EffectiveCloudflareAddress => UseCloudflareDefaultTarget ? DefaultCloudflareAddress : CloudflareAddress;
+    public string GoogleTargetName => UseGoogleDefaultTarget ? "Google" : GoogleAddress;
+    public string CloudflareTargetName => UseCloudflareDefaultTarget ? "Cloudflare" : CloudflareAddress;
+
+    public static DiagnosticSettings Default { get; } = new(DefaultCloudflareAddress, DefaultGoogleAddress, 1000, null)
     {
         Language = "en"
     };
@@ -80,8 +106,17 @@ internal sealed record DiagnosticSettings(
         var root = document.RootElement;
         var hasSavedLanguage = root.TryGetProperty(nameof(Language), out _);
         var hasValidLanguage = settings.Language is "es" or "en";
+        var hasSampleIntervalMilliseconds = root.TryGetProperty(nameof(SampleIntervalMilliseconds), out _);
+        var legacySeconds = 0;
+        var hasLegacySampleIntervalSeconds = root.TryGetProperty("SampleIntervalSeconds", out var legacyInterval) &&
+                                              legacyInterval.ValueKind == JsonValueKind.Number &&
+                                              legacyInterval.TryGetInt32(out legacySeconds);
         var hasGameProfiles = root.TryGetProperty(nameof(GameProfiles), out _);
         var hasChartVisibility = root.TryGetProperty(nameof(ChartVisibility), out _);
+        var hasGoogleDefaultTarget = root.TryGetProperty(nameof(UseGoogleDefaultTarget), out _);
+        var hasCloudflareDefaultTarget = root.TryGetProperty(nameof(UseCloudflareDefaultTarget), out _);
+        var hasStartWithWindows = root.TryGetProperty(nameof(StartWithWindows), out _);
+        var hasStartMonitoringOnLaunch = root.TryGetProperty(nameof(StartMonitoringOnLaunch), out _);
         if (!hasGameProfiles)
         {
             var detectLeague = root.TryGetProperty(nameof(DetectLeague), out var detectValue) &&
@@ -99,13 +134,59 @@ internal sealed record DiagnosticSettings(
             };
         }
 
+        var removedRetiredProfile = false;
+        if (settings.GameProfiles is not null)
+        {
+            var supportedProfiles = settings.GameProfiles
+                .Where(profile => !string.Equals(profile.Id, "bongo-cat", StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            removedRetiredProfile = supportedProfiles.Length != settings.GameProfiles.Count;
+            settings = settings with { GameProfiles = supportedProfiles };
+        }
+
+        var missingBuiltInProfilesAdded = false;
+        if (settings.GameProfiles is not null)
+        {
+            var missingProfiles = GameMonitoringProfile.BuiltInProfiles
+                .Where(profile => !settings.GameProfiles.Any(saved =>
+                    string.Equals(saved.Id, profile.Id, StringComparison.OrdinalIgnoreCase)))
+                .ToArray();
+            if (missingProfiles.Length > 0)
+            {
+                settings = settings with { GameProfiles = settings.GameProfiles.Concat(missingProfiles).ToArray() };
+                missingBuiltInProfilesAdded = true;
+            }
+        }
+
         if (!hasValidLanguage)
         {
             settings = settings with { Language = hasSavedLanguage ? "en" : initialLanguage };
         }
 
+        if (!hasSampleIntervalMilliseconds && hasLegacySampleIntervalSeconds)
+        {
+            settings = settings with { SampleIntervalMilliseconds = legacySeconds * 1000 };
+        }
+
+        if (!hasGoogleDefaultTarget || !hasCloudflareDefaultTarget)
+        {
+            settings = settings with
+            {
+                UseGoogleDefaultTarget = hasGoogleDefaultTarget
+                    ? settings.UseGoogleDefaultTarget
+                    : string.Equals(settings.GoogleAddress, DefaultGoogleAddress, StringComparison.OrdinalIgnoreCase),
+                UseCloudflareDefaultTarget = hasCloudflareDefaultTarget
+                    ? settings.UseCloudflareDefaultTarget
+                    : string.Equals(settings.CloudflareAddress, DefaultCloudflareAddress, StringComparison.OrdinalIgnoreCase)
+            };
+        }
+
         Validate(settings);
-        return new DiagnosticSettingsReadResult(settings, !hasSavedLanguage || !hasValidLanguage || !hasChartVisibility);
+        return new DiagnosticSettingsReadResult(settings,
+            !hasSavedLanguage || !hasValidLanguage || !hasChartVisibility || !hasSampleIntervalMilliseconds ||
+            !hasGoogleDefaultTarget || !hasCloudflareDefaultTarget ||
+            !hasStartWithWindows || !hasStartMonitoringOnLaunch ||
+            missingBuiltInProfilesAdded || removedRetiredProfile);
     }
 
     public void Save() => SaveTo(SettingsPath);
@@ -139,12 +220,12 @@ internal sealed record DiagnosticSettings(
 
     internal static void Validate(DiagnosticSettings settings)
     {
-        if (settings.SampleIntervalSeconds is < 1 or > 10)
+        if (settings.SampleIntervalMilliseconds is < 50 or > 10000)
         {
-            throw new InvalidDataException(Localization.T("El intervalo de medición debe estar entre 1 y 10 segundos."));
+            throw new InvalidDataException(Localization.T("El intervalo de medición debe estar entre 50 y 10000 milisegundos."));
         }
 
-        if (!IsValidHost(settings.CloudflareAddress) || !IsValidHost(settings.GoogleAddress))
+        if (!IsValidHost(settings.EffectiveCloudflareAddress) || !IsValidHost(settings.EffectiveGoogleAddress))
         {
             throw new InvalidDataException(Localization.T("Ingresá una dirección IP o un nombre de host válido para cada destino."));
         }
@@ -159,9 +240,9 @@ internal sealed record DiagnosticSettings(
             throw new InvalidDataException(Localization.T("La configuración de visibilidad del gráfico no es válida."));
         }
 
-        if (settings.GameProfiles.Count > 8)
+        if (settings.GameProfiles.Count > 18)
         {
-            throw new InvalidDataException(Localization.T("Se pueden configurar hasta 8 perfiles de juegos."));
+            throw new InvalidDataException(Localization.T("Se pueden configurar hasta 18 perfiles de juegos."));
         }
 
         var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

@@ -13,15 +13,23 @@ public sealed class DiagnosticSettingsTests
         Assert.Null(exception);
         Assert.Equal("1.1.1.1", DiagnosticSettings.Default.CloudflareAddress);
         Assert.Equal("8.8.8.8", DiagnosticSettings.Default.GoogleAddress);
-        Assert.Equal(1, DiagnosticSettings.Default.SampleIntervalSeconds);
+        Assert.True(DiagnosticSettings.Default.UseGoogleDefaultTarget);
+        Assert.True(DiagnosticSettings.Default.UseCloudflareDefaultTarget);
+        Assert.Equal(10, DiagnosticSettings.Default.GameProfiles.Count);
+        Assert.Equal(
+            ["counter-strike-2", "dota-2", "pubg-battlegrounds", "apex-legends", "fivem", "wardogs", "valheim", "arc-raiders", "rust"],
+            DiagnosticSettings.Default.GameProfiles.Skip(1).Select(profile => profile.Id).ToArray());
+        Assert.Equal(1000, DiagnosticSettings.Default.SampleIntervalMilliseconds);
+        Assert.False(DiagnosticSettings.Default.StartWithWindows);
+        Assert.False(DiagnosticSettings.Default.StartMonitoringOnLaunch);
     }
 
     [Theory]
-    [InlineData(0)]
-    [InlineData(11)]
+    [InlineData(49)]
+    [InlineData(10001)]
     public void RejectsSampleIntervalsOutsideSupportedRange(int interval)
     {
-        var settings = DiagnosticSettings.Default with { SampleIntervalSeconds = interval };
+        var settings = DiagnosticSettings.Default with { SampleIntervalMilliseconds = interval };
 
         Assert.Throws<InvalidDataException>(() => DiagnosticSettings.Validate(settings));
     }
@@ -31,7 +39,11 @@ public sealed class DiagnosticSettingsTests
     [InlineData("not a host name !")]
     public void RejectsInvalidProbeHosts(string host)
     {
-        var settings = DiagnosticSettings.Default with { CloudflareAddress = host };
+        var settings = DiagnosticSettings.Default with
+        {
+            CloudflareAddress = host,
+            UseCloudflareDefaultTarget = false
+        };
 
         Assert.Throws<InvalidDataException>(() => DiagnosticSettings.Validate(settings));
     }
@@ -73,7 +85,7 @@ public sealed class DiagnosticSettingsTests
         var expected = DiagnosticSettings.Default with
         {
             Language = "es",
-            SampleIntervalSeconds = 3,
+            SampleIntervalMilliseconds = 3000,
             GameProfiles = [new GameMonitoringProfile("game", "Game", ["game.exe"], true)]
         };
         var json = JsonSerializer.Serialize(expected);
@@ -83,12 +95,12 @@ public sealed class DiagnosticSettingsTests
         Assert.Equal(expected with { GameProfiles = [], ChartVisibility = result.Settings.ChartVisibility },
             result.Settings with { GameProfiles = [] });
         var expectedProfile = Assert.Single(expected.GameProfiles);
-        var actualProfile = Assert.Single(result.Settings.GameProfiles);
+        var actualProfile = Assert.Single(result.Settings.GameProfiles, profile => profile.Id == expectedProfile.Id);
         Assert.Equal(expectedProfile.Id, actualProfile.Id);
         Assert.Equal(expectedProfile.Name, actualProfile.Name);
         Assert.Equal(expectedProfile.Enabled, actualProfile.Enabled);
         Assert.Equal(expectedProfile.ProcessNames, actualProfile.ProcessNames);
-        Assert.False(result.NeedsSave);
+        Assert.True(result.NeedsSave);
     }
 
     [Fact]
@@ -126,6 +138,31 @@ public sealed class DiagnosticSettingsTests
         var result = DiagnosticSettings.Parse(json, "en");
 
         Assert.Empty(result.Settings.ChartVisibility);
+        Assert.Equal(1000, result.Settings.SampleIntervalMilliseconds);
+        Assert.True(result.NeedsSave);
+    }
+
+    [Fact]
+    public void MigratesSavedCustomTargetsWithoutReplacingTheirAddresses()
+    {
+        const string json = """
+            {
+              "CloudflareAddress": "cloudflare.example",
+              "GoogleAddress": "google.example",
+              "SampleIntervalMilliseconds": 1000,
+              "NetworkInterfaceId": null,
+              "Language": "en",
+              "GameProfiles": [],
+              "ChartVisibility": {}
+            }
+            """;
+
+        var result = DiagnosticSettings.Parse(json, "en");
+
+        Assert.False(result.Settings.UseGoogleDefaultTarget);
+        Assert.False(result.Settings.UseCloudflareDefaultTarget);
+        Assert.Equal("google.example", result.Settings.EffectiveGoogleAddress);
+        Assert.Equal("cloudflare.example", result.Settings.EffectiveCloudflareAddress);
         Assert.True(result.NeedsSave);
     }
 
@@ -148,10 +185,40 @@ public sealed class DiagnosticSettingsTests
 
         var result = DiagnosticSettings.Parse(json, "es");
 
-        var profile = Assert.Single(result.Settings.GameProfiles);
+        var profile = Assert.Single(result.Settings.GameProfiles, item => item.Id == GameMonitoringProfile.LeagueOfLegends.Id);
         Assert.Equal(GameMonitoringProfile.LeagueOfLegends.Id, profile.Id);
         Assert.Equal(enabled, profile.Enabled);
+        Assert.Equal(10, result.Settings.GameProfiles.Count);
+        Assert.Equal(2000, result.Settings.SampleIntervalMilliseconds);
         Assert.True(result.NeedsSave);
+    }
+
+    [Fact]
+    public void RemovesRetiredBongoCatProfileFromSavedSettings()
+    {
+        var saved = DiagnosticSettings.Default with
+        {
+            GameProfiles =
+            [
+                new GameMonitoringProfile("bongo-cat", "Bongo Cat", ["BongoCat"], true)
+            ]
+        };
+
+        var result = DiagnosticSettings.Parse(JsonSerializer.Serialize(saved), "en");
+
+        Assert.DoesNotContain(result.Settings.GameProfiles, profile => profile.Id == "bongo-cat");
+        Assert.Equal(10, result.Settings.GameProfiles.Count);
+        Assert.True(result.NeedsSave);
+    }
+
+    [Fact]
+    public void AcceptsShortSamplingIntervalsThatWarnInTheSettingsUi()
+    {
+        var settings = DiagnosticSettings.Default with { SampleIntervalMilliseconds = 500 };
+
+        var exception = Record.Exception(() => DiagnosticSettings.Validate(settings));
+
+        Assert.Null(exception);
     }
 
     [Fact]
@@ -167,20 +234,44 @@ public sealed class DiagnosticSettingsTests
         var path = Path.Combine(directory, "configuracion.json");
         try
         {
-            var first = DiagnosticSettings.Default with { Language = "es", SampleIntervalSeconds = 3 };
+            var first = DiagnosticSettings.Default with { Language = "es", SampleIntervalMilliseconds = 3000 };
             first.SaveTo(path);
-            var second = first with { SampleIntervalSeconds = 5 };
+            var second = first with { SampleIntervalMilliseconds = 5000 };
             second.SaveTo(path);
 
             var loaded = DiagnosticSettings.Parse(File.ReadAllText(path), "en").Settings;
-            Assert.Equal(5, loaded.SampleIntervalSeconds);
+            Assert.Equal(5000, loaded.SampleIntervalMilliseconds);
             Assert.Equal("es", loaded.Language);
             Assert.False(File.Exists(path + ".tmp"));
         }
+
         finally
         {
             if (Directory.Exists(directory)) Directory.Delete(directory, true);
         }
+    }
+
+    [Fact]
+    public void PersistsStartupPreferences()
+    {
+        var expected = DiagnosticSettings.Default with
+        {
+            StartWithWindows = true,
+            StartMonitoringOnLaunch = true
+        };
+
+        var result = DiagnosticSettings.Parse(JsonSerializer.Serialize(expected), "en");
+
+        Assert.True(result.Settings.StartWithWindows);
+        Assert.True(result.Settings.StartMonitoringOnLaunch);
+        Assert.False(result.NeedsSave);
+    }
+
+    [Fact]
+    public void QuotesStartupCommandExecutablePath()
+    {
+        Assert.Equal("\"C:\\Program Files\\Lagnostics\\Lagnostics.exe\"",
+            WindowsStartup.BuildCommand("C:\\Program Files\\Lagnostics\\Lagnostics.exe"));
     }
 
     [Fact]
@@ -194,7 +285,7 @@ public sealed class DiagnosticSettingsTests
             var original = File.ReadAllText(path);
 
             Assert.Throws<InvalidDataException>(() =>
-                (DiagnosticSettings.Default with { SampleIntervalSeconds = 99 }).SaveTo(path));
+                (DiagnosticSettings.Default with { SampleIntervalMilliseconds = 10001 }).SaveTo(path));
 
             Assert.Equal(original, File.ReadAllText(path));
         }

@@ -14,10 +14,14 @@ internal sealed class SettingsForm : Form
 
     private readonly TextBox _cloudflareAddress = new();
     private readonly TextBox _googleAddress = new();
+    private readonly CheckBox _useGoogleDefaultTarget = new();
+    private readonly CheckBox _useCloudflareDefaultTarget = new();
     private readonly NumericUpDown _sampleInterval = new();
     private readonly ComboBox _networkInterface = new();
     private readonly ComboBox _language = new();
     private readonly CheckedListBox _gameProfiles = new();
+    private readonly CheckBox _startWithWindows = new();
+    private readonly CheckBox _startMonitoringOnLaunch = new();
     private readonly TextBox _logDirectory = new();
     private readonly TextBox _csvDirectory = new();
 
@@ -32,7 +36,7 @@ internal sealed class SettingsForm : Form
         MinimizeBox = false;
         MaximizeBox = false;
         ShowInTaskbar = false;
-        ClientSize = new Size(720, 552);
+        ClientSize = new Size(720, 731);
         Font = new Font("Segoe UI", 9F);
 
         var layout = new TableLayoutPanel
@@ -40,7 +44,7 @@ internal sealed class SettingsForm : Form
             Dock = DockStyle.Fill,
             Padding = new Padding(18),
             ColumnCount = 3,
-            RowCount = 9
+            RowCount = 10
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 185));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -50,18 +54,25 @@ internal sealed class SettingsForm : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 145));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 260));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 64));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
 
-        _cloudflareAddress.Text = settings.CloudflareAddress;
-        _cloudflareAddress.Dock = DockStyle.Fill;
-        _googleAddress.Text = settings.GoogleAddress;
-        _googleAddress.Dock = DockStyle.Fill;
-        _sampleInterval.Minimum = 1;
-        _sampleInterval.Maximum = 10;
-        _sampleInterval.Value = settings.SampleIntervalSeconds;
+        _googleAddress.Text = settings.EffectiveGoogleAddress;
+        _cloudflareAddress.Text = settings.EffectiveCloudflareAddress;
+        _useGoogleDefaultTarget.Text = "Google";
+        _useGoogleDefaultTarget.Checked = settings.UseGoogleDefaultTarget;
+        _useCloudflareDefaultTarget.Text = "Cloudflare";
+        _useCloudflareDefaultTarget.Checked = settings.UseCloudflareDefaultTarget;
+        ConfigureTargetInput(_useGoogleDefaultTarget, _googleAddress, DiagnosticSettings.DefaultGoogleAddress);
+        ConfigureTargetInput(_useCloudflareDefaultTarget, _cloudflareAddress, DiagnosticSettings.DefaultCloudflareAddress);
+        _sampleInterval.Minimum = 50;
+        _sampleInterval.Maximum = 10000;
+        _sampleInterval.Increment = 50;
+        _sampleInterval.ReadOnly = false;
+        _sampleInterval.Value = settings.SampleIntervalMilliseconds;
         _sampleInterval.Width = 100;
 
         layout.Controls.Add(CreateLabel("Idioma:"), 0, 0);
@@ -73,13 +84,11 @@ internal sealed class SettingsForm : Form
         layout.Controls.Add(_language, 1, 0);
         layout.SetColumnSpan(_language, 2);
 
-        layout.Controls.Add(CreateLabel("Destino 1 (ICMP/TCP):"), 0, 1);
-        layout.Controls.Add(_cloudflareAddress, 1, 1);
-        layout.SetColumnSpan(_cloudflareAddress, 2);
-        layout.Controls.Add(CreateLabel("Destino 2 (ICMP/TCP):"), 0, 2);
-        layout.Controls.Add(_googleAddress, 1, 2);
-        layout.SetColumnSpan(_googleAddress, 2);
-        layout.Controls.Add(CreateLabel("Intervalo entre muestras:"), 0, 3);
+        layout.Controls.Add(CreateTargetPanel(_useGoogleDefaultTarget, _googleAddress), 0, 1);
+        layout.SetColumnSpan(layout.GetControlFromPosition(0, 1)!, 3);
+        layout.Controls.Add(CreateTargetPanel(_useCloudflareDefaultTarget, _cloudflareAddress), 0, 2);
+        layout.SetColumnSpan(layout.GetControlFromPosition(0, 2)!, 3);
+        layout.Controls.Add(CreateLabel("Intervalo entre muestras (ms):"), 0, 3);
         layout.Controls.Add(_sampleInterval, 1, 3);
         layout.Controls.Add(CreateLabel("Interfaz de red:"), 0, 4);
         _networkInterface.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -147,16 +156,33 @@ internal sealed class SettingsForm : Form
         editProfile.Enabled = false;
         removeProfile.Enabled = false;
 
+        _startWithWindows.Text = Localization.T("Iniciar con Windows");
+        _startWithWindows.Checked = settings.StartWithWindows;
+        _startWithWindows.AutoSize = true;
+        _startMonitoringOnLaunch.Text = Localization.T("Iniciar análisis al iniciar el programa");
+        _startMonitoringOnLaunch.Checked = settings.StartMonitoringOnLaunch;
+        _startMonitoringOnLaunch.AutoSize = true;
+        var startupOptions = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false
+        };
+        startupOptions.Controls.Add(_startWithWindows);
+        startupOptions.Controls.Add(_startMonitoringOnLaunch);
+        layout.Controls.Add(startupOptions, 0, 6);
+        layout.SetColumnSpan(startupOptions, 3);
+
         _logDirectory.Text = settings.LogDirectory;
         _logDirectory.Dock = DockStyle.Fill;
         _csvDirectory.Text = settings.CsvDirectory;
         _csvDirectory.Dock = DockStyle.Fill;
-        layout.Controls.Add(CreateLabel("Carpeta de registros:"), 0, 6);
-        layout.Controls.Add(_logDirectory, 1, 6);
-        layout.Controls.Add(CreateBrowseButton(_logDirectory), 2, 6);
-        layout.Controls.Add(CreateLabel("Carpeta de archivos CSV:"), 0, 7);
-        layout.Controls.Add(_csvDirectory, 1, 7);
-        layout.Controls.Add(CreateBrowseButton(_csvDirectory), 2, 7);
+        layout.Controls.Add(CreateLabel("Carpeta de registros:"), 0, 7);
+        layout.Controls.Add(_logDirectory, 1, 7);
+        layout.Controls.Add(CreateBrowseButton(_logDirectory), 2, 7);
+        layout.Controls.Add(CreateLabel("Carpeta de archivos CSV:"), 0, 8);
+        layout.Controls.Add(_csvDirectory, 1, 8);
+        layout.Controls.Add(CreateBrowseButton(_csvDirectory), 2, 8);
 
         var buttons = new FlowLayoutPanel
         {
@@ -168,7 +194,7 @@ internal sealed class SettingsForm : Form
         var cancel = new Button { Text = Localization.T("Cancelar"), AutoSize = true, DialogResult = DialogResult.Cancel };
         buttons.Controls.Add(cancel);
         buttons.Controls.Add(save);
-        layout.Controls.Add(buttons, 0, 8);
+        layout.Controls.Add(buttons, 0, 9);
         layout.SetColumnSpan(buttons, 3);
         Controls.Add(layout);
 
@@ -216,6 +242,10 @@ internal sealed class SettingsForm : Form
             (int)_sampleInterval.Value,
             selectedInterface?.Id)
         {
+            UseGoogleDefaultTarget = _useGoogleDefaultTarget.Checked,
+            UseCloudflareDefaultTarget = _useCloudflareDefaultTarget.Checked,
+            StartWithWindows = _startWithWindows.Checked,
+            StartMonitoringOnLaunch = _startMonitoringOnLaunch.Checked,
             GameProfiles = profiles,
             LogDirectory = _logDirectory.Text.Trim(),
             CsvDirectory = _csvDirectory.Text.Trim(),
@@ -223,15 +253,60 @@ internal sealed class SettingsForm : Form
         };
         try
         {
+            if (updated.SampleIntervalMilliseconds <= 500)
+            {
+                MessageBox.Show(this,
+                    Localization.T("Un intervalo de 500 ms o menos aumenta el tamaño de los logs y el uso de recursos."),
+                    Localization.T("Advertencia de intervalo"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+
+            WindowsStartup.SetEnabled(updated.StartWithWindows, Application.ExecutablePath);
             updated.Save();
             Settings = updated;
         }
-        catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException)
+        catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or InvalidOperationException)
         {
             DialogResult = DialogResult.None;
             MessageBox.Show(this, Localization.T(exception.Message), Localization.T("No se pudo guardar la configuración"),
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
+    }
+
+    private static FlowLayoutPanel CreateTargetPanel(CheckBox useDefault, TextBox address)
+    {
+        var panel = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            AutoSize = true
+        };
+        useDefault.AutoSize = true;
+        useDefault.Margin = new Padding(0, 7, 12, 0);
+        address.Width = 420;
+        address.Margin = new Padding(0, 4, 0, 0);
+        panel.Controls.Add(useDefault);
+        panel.Controls.Add(address);
+        return panel;
+    }
+
+    private static void ConfigureTargetInput(CheckBox useDefault, TextBox address, string defaultAddress)
+    {
+        void Apply()
+        {
+            if (useDefault.Checked)
+            {
+                address.Text = defaultAddress;
+                address.Enabled = false;
+            }
+            else
+            {
+                address.Enabled = true;
+            }
+        }
+
+        useDefault.CheckedChanged += (_, _) => Apply();
+        Apply();
     }
 
     private void AddProfile()
@@ -285,7 +360,8 @@ internal sealed class SettingsForm : Form
         _gameProfiles.SelectedItem as GameMonitoringProfile;
 
     private static bool IsBuiltInProfile(GameMonitoringProfile? profile) =>
-        profile?.Id == GameMonitoringProfile.LeagueOfLegends.Id;
+        profile is not null && GameMonitoringProfile.BuiltInProfiles.Any(builtIn =>
+            string.Equals(builtIn.Id, profile.Id, StringComparison.OrdinalIgnoreCase));
 
     private static Label CreateLabel(string text) => new()
     {
