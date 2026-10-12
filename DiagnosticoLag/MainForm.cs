@@ -59,6 +59,8 @@ internal sealed class MainForm : Form
     private bool _closing;
     private bool _updatingChartVisibility;
     private TimeSpan? _monitoringDuration;
+    private NotifyIcon? _trayIcon;
+    private readonly TrayPanel _trayPanel;
 
     private sealed record DurationOption(string LabelKey, TimeSpan? Duration)
     {
@@ -110,14 +112,59 @@ internal sealed class MainForm : Form
             }
         };
         FormClosing += OnFormClosing;
+        Resize += (_, _) =>
+        {
+            if (WindowState == FormWindowState.Minimized && _settings.MinimizeToTray && !_closing)
+            {
+                BeginInvoke(MinimizeToTray);
+            }
+        };
+        _trayPanel = new TrayPanel(
+            StartMonitoringAsync,
+            PauseMonitoring,
+            ResumeMonitoring,
+            () =>
+            {
+                RestoreFromTray();
+                ShowReport("parcial");
+            },
+            async () =>
+            {
+                RestoreFromTray();
+                await FinishMonitoringAsync();
+            });
         SetMonitoringControls(false, false);
         Shown += async (_, _) =>
         {
-            if (_settings.StartMonitoringOnLaunch)
+            if (_settings.StartMonitoringOnLaunch && !_startedHiddenInTray)
             {
                 await StartMonitoringAsync();
             }
         };
+    }
+
+    internal bool StartInTray { get; init; }
+
+    private bool _startedHiddenInTray;
+
+    protected override void SetVisibleCore(bool value)
+    {
+        if (value && StartInTray && !_startedHiddenInTray && !IsHandleCreated)
+        {
+            _startedHiddenInTray = true;
+            CreateHandle();
+            EnsureTrayIcon();
+            _trayIcon!.Visible = true;
+            base.SetVisibleCore(false);
+            if (_settings.StartMonitoringOnLaunch)
+            {
+                BeginInvoke(async () => await StartMonitoringAsync());
+            }
+
+            return;
+        }
+
+        base.SetVisibleCore(value);
     }
 
     private static Icon LoadApplicationIcon()
@@ -676,6 +723,7 @@ internal sealed class MainForm : Form
             _timer.Interval = _settings.SampleIntervalMilliseconds;
             _grid.Rows.Clear();
             _chart.StartSession(_session.StartedAt);
+            _trayPanel.Chart.StartSession(_session.StartedAt);
             _details.Clear();
             AppendLog($"--- {Localization.T("NUEVA SESIÓN")}: {DateTime.Now:yyyy-MM-dd HH:mm:ss} ---{Environment.NewLine}" +
                       $"{Localization.T("Aplicativo")}: {_session.Metadata.ApplicationName} | {Localization.T("Versión")}: {_session.Metadata.ApplicationVersion} | " +
@@ -786,7 +834,9 @@ internal sealed class MainForm : Form
     private void UpdateDashboard(MonitorSnapshot snapshot)
     {
         _lastSnapshot = snapshot;
-        _chart.AddSample(DateTime.Now, snapshot.LastMeasurements, snapshot.Targets);
+        var sampleTime = DateTime.Now;
+        _chart.AddSample(sampleTime, snapshot.LastMeasurements, snapshot.Targets);
+        _trayPanel.Chart.AddSample(sampleTime, snapshot.LastMeasurements, snapshot.Targets);
         _grid.SuspendLayout();
         try
         {
@@ -1193,11 +1243,73 @@ internal sealed class MainForm : Form
         _deleteSessionsMenu.Enabled = !active;
         _durationChoice.Enabled = !active;
         _durationLabel.Enabled = !active;
+        _trayPanel.SetState(_status.Text, !active, active && !paused, active && paused, active && _session is not null, active);
+    }
+
+    private void EnsureTrayIcon()
+    {
+        if (_trayIcon is not null)
+        {
+            return;
+        }
+
+        var menu = new ContextMenuStrip();
+        menu.Items.Add(Localization.T("Abrir Lagnostics"), null, (_, _) => RestoreFromTray());
+        menu.Items.Add(Localization.T("Salir"), null, (_, _) => Close());
+        _trayIcon = new NotifyIcon { Icon = _applicationIcon, Text = "Lagnostics", ContextMenuStrip = menu };
+        _trayIcon.MouseClick += (_, args) =>
+        {
+            if (args.Button == MouseButtons.Left)
+            {
+                if (_trayPanel.Visible)
+                {
+                    _trayPanel.Hide();
+                }
+                else
+                {
+                    _trayPanel.ShowNearTray();
+                }
+            }
+        };
+        _trayIcon.DoubleClick += (_, _) => RestoreFromTray();
+    }
+
+    private void MinimizeToTray()
+    {
+        EnsureTrayIcon();
+        _trayPanel.ApplyLocalization();
+        _trayIcon!.Visible = true;
+        Hide();
+    }
+
+    private void RestoreFromTray()
+    {
+        _trayPanel.Hide();
+        if (WindowState == FormWindowState.Minimized)
+        {
+            WindowState = FormWindowState.Normal;
+        }
+
+        if (!Visible)
+        {
+            Show();
+        }
+
+        Activate();
+        if (_trayIcon is not null)
+        {
+            _trayIcon.Visible = false;
+        }
     }
 
     private void OnFormClosing(object? sender, FormClosingEventArgs e)
     {
         _closing = true;
+        if (_trayIcon is not null)
+        {
+            _trayIcon.Visible = false;
+        }
+        _trayPanel.Hide();
         _timer.Stop();
         if (_session is not null)
         {
@@ -1218,6 +1330,8 @@ internal sealed class MainForm : Form
         if (disposing)
         {
             _timer.Dispose();
+            _trayIcon?.Dispose();
+            _trayPanel.Dispose();
             _applicationIcon.Dispose();
         }
 
@@ -1734,6 +1848,7 @@ internal sealed class LatencyChart : Control
     private string? _lastHoverText;
     private TimeSpan? _viewDuration;
     public event Action<string, bool>? SeriesVisibilityChanged;
+    public bool CompactTimeAxis { get; set; }
 
     public LatencyChart()
     {
@@ -1955,7 +2070,7 @@ internal sealed class LatencyChart : Control
             graphics.DrawString(value.ToString(CultureInfo.InvariantCulture), font, textBrush, 8, y - 8);
         }
 
-        DrawTimeAxis(graphics, plot, viewStart, now, durationSeconds, gridPen, textBrush, font);
+        DrawTimeAxis(graphics, plot, viewStart, now, durationSeconds, gridPen, textBrush, font, CompactTimeAxis);
         graphics.DrawRectangle(borderPen, plot);
         var legendX = plot.Left + 6;
         var legendY = 29;
@@ -2021,8 +2136,26 @@ internal sealed class LatencyChart : Control
         double durationSeconds,
         Pen gridPen,
         Brush textBrush,
-        Font font)
+        Font font,
+        bool compact = false)
     {
+        if (compact)
+        {
+            var compactTicks = new[] { startedAt, startedAt.AddSeconds(durationSeconds / 2), now };
+            var compactFormat = durationSeconds < 86400 ? "HH:mm:ss" : "dd/MM HH:mm";
+            foreach (var tick in compactTicks)
+            {
+                var x = plot.Left + (int)((tick - startedAt).TotalSeconds / durationSeconds * plot.Width);
+                graphics.DrawLine(gridPen, x, plot.Top, x, plot.Bottom);
+                var text = tick.ToString(compactFormat, CultureInfo.CurrentCulture);
+                var size = graphics.MeasureString(text, font);
+                var textX = Math.Clamp(x - (int)(size.Width / 2), plot.Left, Math.Max(plot.Left, plot.Right - (int)size.Width));
+                graphics.DrawString(text, font, textBrush, textX, plot.Bottom + 5);
+            }
+
+            return;
+        }
+
         var availableTicks = Math.Clamp(plot.Width / 110, 2, 6);
         var targetInterval = durationSeconds / availableTicks;
         var intervalSeconds = new[]

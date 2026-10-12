@@ -270,7 +270,7 @@ public sealed class DiagnosticSettingsTests
     [Fact]
     public void QuotesStartupCommandExecutablePath()
     {
-        Assert.Equal("\"C:\\Program Files\\Lagnostics\\Lagnostics.exe\"",
+        Assert.Equal("\"C:\\Program Files\\Lagnostics\\Lagnostics.exe\" --tray",
             WindowsStartup.BuildCommand("C:\\Program Files\\Lagnostics\\Lagnostics.exe"));
     }
 

@@ -22,5 +22,7 @@ internal static class WindowsStartup
         }
     }
 
-    internal static string BuildCommand(string executablePath) => $"\"{executablePath}\"";
+    internal const string TrayArgument = "--tray";
+
+    internal static string BuildCommand(string executablePath) => $"\"{executablePath}\" {TrayArgument}";
 }

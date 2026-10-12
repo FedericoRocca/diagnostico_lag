@@ -47,6 +47,23 @@ public sealed class WindowConstructionTests
     }
 
     [Fact]
+    public void TrayPanelReflectsMonitoringStateAndHostsMiniChart()
+    {
+        RunOnStaThread(() =>
+        {
+            var clicks = new List<string>();
+            using var panel = new TrayPanel(() => { clicks.Add("start"); return Task.CompletedTask; }, () => clicks.Add("pause"), () => clicks.Add("resume"),
+                () => clicks.Add("partial"), () => { clicks.Add("finish"); return Task.CompletedTask; });
+            Assert.NotNull(panel.Chart);
+            var buttons = Descendants(panel).OfType<Button>().ToArray();
+            Assert.Equal(5, buttons.Length);
+            panel.SetState("x", false, true, false, true, true);
+            Assert.False(buttons.Single(b => b.Text == "Start").Enabled);
+            Assert.True(buttons.Single(b => b.Text == "Pause").Enabled);
+        });
+    }
+
+    [Fact]
     public void DurationChoicesRefreshWhenLanguageChanges()
     {
         RunOnStaThread(() =>

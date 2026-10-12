@@ -3,9 +3,10 @@ namespace DiagnosticoLag;
 internal static class Program
 {
     [STAThread]
-    private static void Main()
+    private static void Main(string[] args)
     {
         ApplicationConfiguration.Initialize();
-        Application.Run(new MainForm());
+        var startInTray = args.Contains(WindowsStartup.TrayArgument, StringComparer.OrdinalIgnoreCase);
+        Application.Run(new MainForm { StartInTray = startInTray });
     }
 }

@@ -22,6 +22,7 @@ internal sealed class SettingsForm : Form
     private readonly CheckedListBox _gameProfiles = new();
     private readonly CheckBox _startWithWindows = new();
     private readonly CheckBox _startMonitoringOnLaunch = new();
+    private readonly CheckBox _minimizeToTray = new();
     private readonly TextBox _logDirectory = new();
     private readonly TextBox _csvDirectory = new();
 
@@ -36,7 +37,7 @@ internal sealed class SettingsForm : Form
         MinimizeBox = false;
         MaximizeBox = false;
         ShowInTaskbar = false;
-        ClientSize = new Size(720, 731);
+        ClientSize = new Size(720, 755);
         Font = new Font("Segoe UI", 9F);
 
         var layout = new TableLayoutPanel
@@ -55,7 +56,7 @@ internal sealed class SettingsForm : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 260));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 64));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 88));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
@@ -162,6 +163,9 @@ internal sealed class SettingsForm : Form
         _startMonitoringOnLaunch.Text = Localization.T("Iniciar análisis al iniciar el programa");
         _startMonitoringOnLaunch.Checked = settings.StartMonitoringOnLaunch;
         _startMonitoringOnLaunch.AutoSize = true;
+        _minimizeToTray.Text = Localization.T("Minimizar al systray");
+        _minimizeToTray.Checked = settings.MinimizeToTray;
+        _minimizeToTray.AutoSize = true;
         var startupOptions = new FlowLayoutPanel
         {
             Dock = DockStyle.Fill,
@@ -170,6 +174,7 @@ internal sealed class SettingsForm : Form
         };
         startupOptions.Controls.Add(_startWithWindows);
         startupOptions.Controls.Add(_startMonitoringOnLaunch);
+        startupOptions.Controls.Add(_minimizeToTray);
         layout.Controls.Add(startupOptions, 0, 6);
         layout.SetColumnSpan(startupOptions, 3);
 
@@ -246,6 +251,7 @@ internal sealed class SettingsForm : Form
             UseCloudflareDefaultTarget = _useCloudflareDefaultTarget.Checked,
             StartWithWindows = _startWithWindows.Checked,
             StartMonitoringOnLaunch = _startMonitoringOnLaunch.Checked,
+            MinimizeToTray = _minimizeToTray.Checked,
             GameProfiles = profiles,
             LogDirectory = _logDirectory.Text.Trim(),
             CsvDirectory = _csvDirectory.Text.Trim(),

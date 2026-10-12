@@ -44,6 +44,7 @@ internal sealed record DiagnosticSettings(
     public bool UseCloudflareDefaultTarget { get; init; } = true;
     public bool StartWithWindows { get; init; }
     public bool StartMonitoringOnLaunch { get; init; }
+    public bool MinimizeToTray { get; init; } = true;
     public IReadOnlyList<GameMonitoringProfile> GameProfiles { get; init; } = GameMonitoringProfile.BuiltInProfiles;
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool DetectLeague { get; init; }
