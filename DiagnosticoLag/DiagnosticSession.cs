@@ -35,7 +35,9 @@ internal sealed record MonitorSnapshot(
     IReadOnlyList<GameObservedEndpoint> GameEndpoints,
     IReadOnlyList<GameObservedEndpoint> ActiveGameEndpoints,
     DiagnosticResult Diagnosis,
-    int SamplesUntilBaseline);
+    int SamplesUntilBaseline,
+    IReadOnlyList<LagEvent>? Events = null);
+internal sealed record LagEvent(DateTime Time, string TargetKey, string TargetName, int Value);
 
 internal sealed class DiagnosticSession
 {
@@ -50,6 +52,7 @@ internal sealed class DiagnosticSession
     private readonly Dictionary<string, Queue<int>> _recentMeasurements = new(StringComparer.Ordinal);
     private readonly Dictionary<string, StatSummary> _recentSummaryCache = new(StringComparer.Ordinal);
     private readonly Queue<string> _recentEvents = new();
+    private readonly List<LagEvent> _lagEvents = new();
     private readonly Dictionary<string, List<DateTime>> _eventTimes = new(StringComparer.Ordinal);
     private readonly Stopwatch _elapsed = Stopwatch.StartNew();
     private readonly DateTime _startedAt = DateTime.Now;
@@ -140,6 +143,10 @@ internal sealed class DiagnosticSession
             {
                 var text = value < 0 ? Localization.T("sin respuesta") : $"{value} {Localization.T("ms")}";
                 AddEvent(Localization.T(target.Name), text, timestamp);
+                if (_lagEvents.Count < 2000)
+                {
+                    _lagEvents.Add(new LagEvent(timestamp, target.Key, target.Name, value));
+                }
             }
         }
 
@@ -229,6 +236,8 @@ internal sealed class DiagnosticSession
             report.Add(Localization.F("Recomendación: {0}", Localization.T(snapshot.Diagnosis.Recommendation)));
         }
 
+        report.AddRange(ReportExplainer.Build(snapshot, health));
+
         report.Add("");
         report.Add(Localization.F("NOTA: se requieren al menos 30 muestras por destino para incluirlo en el diagnóstico. Se sondea cada {0} milisegundos.", _settings.SampleIntervalMilliseconds));
         report.Add(Localization.T("NOTA: el primer salto del ISP es orientativo. Los endpoints de juegos se observan en conexiones TCP de sus procesos y pueden ser auxiliares, no el servidor de partida."));
@@ -270,7 +279,7 @@ internal sealed class DiagnosticSession
                 target.Key))
             .ToArray();
         return new MonitorSnapshot(_startedAt, duration, targets, lastMeasurements, _recentEvents.ToArray(), Connection,
-            RouterAddress, IspAddress, gameEndpoints, _activeGameEndpoints, diagnosis, Math.Max(0, 60 - _samples));
+            RouterAddress, IspAddress, gameEndpoints, _activeGameEndpoints, diagnosis, Math.Max(0, 60 - _samples), _lagEvents.ToArray());
     }
 
     private IReadOnlyDictionary<string, StatSummary> GetRecentSummaries()

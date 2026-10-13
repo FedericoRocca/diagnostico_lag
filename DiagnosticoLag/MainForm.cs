@@ -16,6 +16,8 @@ internal sealed class MainForm : Form
     private readonly LatencyChart _chart = new();
     private readonly BufferedLabel _status = new();
     private readonly BufferedLabel _diagnosis = new();
+    private readonly Label _verdict = new();
+    private readonly ToolTip _verdictTip = new();
     private readonly BufferedRichTextBox _details = new();
     private readonly Button _startButton = new();
     private readonly Button _pauseButton = new();
@@ -226,6 +228,21 @@ internal sealed class MainForm : Form
         }
         heading.Resize += (_, _) => LayoutHeaderActions();
         _status.SizeChanged += (_, _) => LayoutHeaderActions();
+        _verdict.AutoSize = false;
+        _verdict.Visible = false;
+        _verdict.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+        _verdict.Font = new Font("Segoe UI Semibold", 10.5F, FontStyle.Bold);
+        _verdict.ForeColor = Color.White;
+        heading.Controls.Add(_verdict);
+        void LayoutVerdict()
+        {
+            var left = _titleLabel.Right + 24;
+            var right = _status.Left - 16;
+            _verdict.SetBounds(left, 10, Math.Max(0, right - left), 36);
+        }
+        heading.Resize += (_, _) => LayoutVerdict();
+        _status.SizeChanged += (_, _) => LayoutVerdict();
+        _verdict.VisibleChanged += (_, _) => LayoutVerdict();
         heading.Controls.Add(title);
         heading.Controls.Add(subtitle);
         heading.Controls.Add(_status);
@@ -724,6 +741,7 @@ internal sealed class MainForm : Form
             _grid.Rows.Clear();
             _chart.StartSession(_session.StartedAt);
             _trayPanel.Chart.StartSession(_session.StartedAt);
+            _verdict.Visible = false;
             _details.Clear();
             AppendLog($"--- {Localization.T("NUEVA SESIÓN")}: {DateTime.Now:yyyy-MM-dd HH:mm:ss} ---{Environment.NewLine}" +
                       $"{Localization.T("Aplicativo")}: {_session.Metadata.ApplicationName} | {Localization.T("Versión")}: {_session.Metadata.ApplicationVersion} | " +
@@ -923,17 +941,37 @@ internal sealed class MainForm : Form
         {
             _diagnosis.ForeColor = diagnosisColor;
         }
+        var verdict = SimpleVerdict.From(snapshot);
+        var verdictText = (verdict.Level switch { VerdictLevel.Good => "● ", VerdictLevel.Measuring => "○ ", _ => "▲ " }) + verdict.Headline;
+        if (_verdict.Text != verdictText)
+        {
+            _verdict.Text = verdictText;
+            _verdictTip.SetToolTip(_verdict, verdict.Detail);
+        }
+
+        _verdict.BackColor = verdict.Level switch
+        {
+            VerdictLevel.Good => Color.FromArgb(28, 121, 91),
+            VerdictLevel.Unstable => Color.FromArgb(196, 140, 20),
+            VerdictLevel.Bad => Color.FromArgb(175, 59, 59),
+            _ => Color.FromArgb(112, 126, 145)
+        };
+        _verdict.Visible = true;
+
         var enabledProfiles = _settings.GameProfiles.Where(profile => profile.Enabled).ToArray();
         var gameStatus = enabledProfiles.Length == 0
             ? Localization.T("Juegos: sin perfiles activados.")
             : snapshot.ActiveGameEndpoints.Count == 0
                 ? Localization.F("Juegos: esperando conexiones TCP de {0}.", string.Join(", ", enabledProfiles.Select(profile => profile.Name)))
                 : Localization.F("Conexiones observadas: {0}.", string.Join(", ", snapshot.ActiveGameEndpoints.Select(endpoint => $"{endpoint.ProfileName} ({endpoint.Address}:{endpoint.Port})")));
+        var incidents = LagIncident.Group(snapshot.Events);
         _details.SetTextWithoutFlicker(
             Localization.F("Duración: {0} | Línea base: {1}", FormatDuration(snapshot.Duration),
                 snapshot.SamplesUntilBaseline == 0 ? Localization.T("lista") : Localization.F("en {0} muestras", snapshot.SamplesUntilBaseline)) +
-            $"{Environment.NewLine}{gameStatus}{Environment.NewLine}{Environment.NewLine}{Localization.T("Eventos recientes")}{Environment.NewLine}" +
-            (snapshot.RecentEvents.Count == 0 ? Localization.T("Sin pérdidas ni picos ≥120 ms.") : string.Join(Environment.NewLine, snapshot.RecentEvents.TakeLast(10).Select(Localization.T))));
+            $"{Environment.NewLine}{gameStatus}{Environment.NewLine}{Environment.NewLine}{Localization.T("Línea de tiempo de incidentes")}{Environment.NewLine}" +
+            (incidents.Count == 0
+                ? Localization.T("Sin pérdidas ni picos ≥120 ms.")
+                : string.Join(Environment.NewLine, incidents.TakeLast(5).Select(item => item.Describe()))));
     }
 
     private void SetAllChartVisibility(bool visible)
